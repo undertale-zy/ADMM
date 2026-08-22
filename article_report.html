@@ -1,0 +1,1017 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="《Sparsity-Driven ISAR Imaging Based on Two-Dimensional ADMM》中文解读与代码映射报告">
+  <title>二维 ADMM 稀疏 ISAR 成像：论文解读</title>
+  <style>
+    :root {
+      --paper: #ffffff;
+      --canvas: #eef1f2;
+      --ink: #172126;
+      --muted: #5d6b72;
+      --line: #d5dde0;
+      --line-strong: #aebbc0;
+      --teal: #087f76;
+      --teal-soft: #e4f2ef;
+      --coral: #c94e3f;
+      --coral-soft: #f9e9e6;
+      --blue: #255aa8;
+      --code: #152126;
+      --code-ink: #e7f0ef;
+      --radius: 6px;
+      --content: 1160px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 32px;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--canvas);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.75;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: var(--blue);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    a:hover { color: var(--teal); }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    h1 {
+      max-width: 900px;
+      margin-bottom: 18px;
+      font-family: Georgia, "Songti SC", "STSong", serif;
+      font-size: 48px;
+      line-height: 1.14;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin-bottom: 22px;
+      font-family: Georgia, "Songti SC", "STSong", serif;
+      font-size: 30px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin-bottom: 10px;
+      font-size: 18px;
+      line-height: 1.4;
+      letter-spacing: 0;
+    }
+
+    p { margin-bottom: 16px; }
+
+    code {
+      padding: 2px 5px;
+      border: 1px solid #cfd9dc;
+      border-radius: 3px;
+      background: #f2f5f5;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.88em;
+    }
+
+    .masthead {
+      background: var(--paper);
+      border-top: 6px solid var(--ink);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .masthead-inner {
+      max-width: var(--content);
+      margin: 0 auto;
+      padding: 50px 28px 36px;
+    }
+
+    .eyebrow {
+      margin-bottom: 15px;
+      color: var(--teal);
+      font-size: 13px;
+      font-weight: 750;
+      text-transform: uppercase;
+    }
+
+    .deck {
+      max-width: 850px;
+      margin-bottom: 26px;
+      color: #344148;
+      font-size: 20px;
+      line-height: 1.6;
+    }
+
+    .meta-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 24px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .meta-line strong { color: var(--ink); }
+
+    .page-shell {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr);
+      gap: 48px;
+      max-width: var(--content);
+      margin: 0 auto;
+      padding: 36px 28px 80px;
+    }
+
+    .toc {
+      align-self: start;
+      position: sticky;
+      top: 22px;
+      padding-top: 4px;
+      font-size: 14px;
+    }
+
+    .toc-title {
+      margin-bottom: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 750;
+      text-transform: uppercase;
+    }
+
+    .toc a {
+      display: block;
+      padding: 8px 10px;
+      border-left: 2px solid var(--line);
+      color: #4d5b61;
+      text-decoration: none;
+    }
+
+    .toc a:hover,
+    .toc a[aria-current="true"] {
+      border-left-color: var(--teal);
+      color: var(--ink);
+      background: var(--teal-soft);
+    }
+
+    .toc-source {
+      display: block;
+      margin-top: 18px;
+      padding: 12px 0;
+      border-top: 1px solid var(--line);
+      font-weight: 650;
+    }
+
+    main {
+      min-width: 0;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      box-shadow: 0 12px 35px rgba(24, 43, 49, 0.06);
+    }
+
+    section {
+      padding: 46px 52px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    section:last-child { border-bottom: 0; }
+
+    .lead {
+      color: #2e3c42;
+      font-size: 18px;
+      line-height: 1.75;
+    }
+
+    .summary-strip {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      margin: 28px 0 8px;
+      border-top: 1px solid var(--line-strong);
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    .summary-item {
+      min-width: 0;
+      padding: 20px;
+      border-right: 1px solid var(--line);
+    }
+
+    .summary-item:first-child { padding-left: 0; }
+    .summary-item:last-child { border-right: 0; }
+
+    .summary-label {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .summary-value {
+      display: block;
+      font-size: 18px;
+      font-weight: 760;
+      line-height: 1.45;
+    }
+
+    .callout {
+      margin: 28px 0 6px;
+      padding: 22px 24px;
+      border-left: 4px solid var(--teal);
+      background: var(--teal-soft);
+    }
+
+    .callout.warning {
+      border-left-color: var(--coral);
+      background: var(--coral-soft);
+    }
+
+    .callout strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    .callout p:last-child { margin-bottom: 0; }
+
+    .problem-flow {
+      display: grid;
+      grid-template-columns: 1fr 36px 1fr 36px 1fr;
+      align-items: stretch;
+      margin: 30px 0;
+    }
+
+    .flow-node {
+      padding: 18px;
+      border: 1px solid var(--line-strong);
+      border-top: 4px solid var(--teal);
+      background: #fff;
+    }
+
+    .flow-node strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .flow-node span {
+      display: block;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .flow-arrow {
+      display: grid;
+      place-items: center;
+      color: var(--coral);
+      font-size: 22px;
+      font-weight: 800;
+    }
+
+    .equation {
+      overflow-x: auto;
+      margin: 24px 0;
+      padding: 21px 24px;
+      border: 1px solid #30434a;
+      border-radius: var(--radius);
+      color: var(--code-ink);
+      background: var(--code);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 20px;
+      line-height: 1.6;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .equation-caption {
+      display: block;
+      margin-top: 8px;
+      color: #9fb0b5;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12px;
+      white-space: normal;
+    }
+
+    .dim-table,
+    .result-table,
+    .code-map {
+      width: 100%;
+      margin: 24px 0;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #34444a;
+      background: #edf2f3;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    tbody tr:hover { background: #f7f9f9; }
+
+    .best {
+      color: #066b63;
+      font-weight: 800;
+    }
+
+    .step-list {
+      counter-reset: admm;
+      margin: 28px 0 8px;
+      padding: 0;
+      list-style: none;
+    }
+
+    .step-list li {
+      counter-increment: admm;
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 16px;
+      padding: 18px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .step-list li:last-child { border-bottom: 1px solid var(--line); }
+
+    .step-list li::before {
+      content: counter(admm, decimal-leading-zero);
+      color: var(--coral);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .step-list strong { display: block; margin-bottom: 5px; }
+    .step-list p { margin-bottom: 0; color: var(--muted); }
+
+    .comparison {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin: 26px 0;
+    }
+
+    .comparison-item {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    .comparison-item h3 { color: var(--teal); }
+    .comparison-item p:last-child { margin-bottom: 0; }
+
+    .memory-figure {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+      margin: 28px 0;
+      border: 1px solid var(--line-strong);
+    }
+
+    .memory-side { padding: 24px; }
+    .memory-side + .memory-side { border-left: 1px solid var(--line-strong); }
+
+    .memory-side.bad { background: var(--coral-soft); }
+    .memory-side.good { background: var(--teal-soft); }
+
+    .memory-number {
+      display: block;
+      margin: 8px 0 3px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 34px;
+      font-weight: 750;
+      line-height: 1.2;
+    }
+
+    .memory-note { color: var(--muted); font-size: 13px; }
+
+    figure {
+      margin: 30px 0 10px;
+    }
+
+    figure img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border: 1px solid var(--line);
+      background: white;
+    }
+
+    figcaption {
+      padding-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .figure-link {
+      display: inline-block;
+      margin-left: 8px;
+      font-weight: 650;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 20px;
+      margin: 16px 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .legend span::before {
+      content: "";
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      margin-right: 7px;
+      border-radius: 50%;
+      background: var(--teal);
+    }
+
+    .legend span:nth-child(2)::before { background: var(--coral); }
+    .legend span:nth-child(3)::before { background: var(--blue); }
+
+    .bullet-list {
+      margin: 18px 0 4px;
+      padding-left: 22px;
+    }
+
+    .bullet-list li { margin-bottom: 11px; padding-left: 5px; }
+    .bullet-list li::marker { color: var(--teal); }
+
+    .verdict {
+      padding: 28px;
+      border: 1px solid var(--line-strong);
+      border-top: 5px solid var(--ink);
+      background: #f6f8f8;
+    }
+
+    .verdict p:last-child { margin-bottom: 0; }
+
+    details {
+      margin-top: 22px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    summary {
+      padding: 15px 0;
+      cursor: pointer;
+      color: var(--ink);
+      font-weight: 750;
+    }
+
+    details > div { padding: 0 0 16px; }
+
+    .footer-note {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      h1 { font-size: 38px; }
+
+      .page-shell {
+        grid-template-columns: 1fr;
+        gap: 18px;
+        padding-top: 22px;
+      }
+
+      .toc {
+        position: static;
+        display: flex;
+        overflow-x: auto;
+        padding-bottom: 8px;
+      }
+
+      .toc-title, .toc-source { display: none; }
+
+      .toc a {
+        flex: 0 0 auto;
+        border-left: 0;
+        border-bottom: 2px solid var(--line);
+      }
+    }
+
+    @media (max-width: 680px) {
+      body { font-size: 15px; }
+
+      .masthead-inner { padding: 34px 20px 28px; }
+      h1 { font-size: 32px; }
+      h2 { font-size: 25px; }
+      .deck { font-size: 17px; }
+
+      .page-shell { padding: 14px 12px 50px; }
+      section { padding: 34px 22px; }
+
+      .summary-strip,
+      .comparison,
+      .memory-figure {
+        grid-template-columns: 1fr;
+      }
+
+      .summary-item {
+        padding: 16px 0;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .summary-item:last-child { border-bottom: 0; }
+
+      .problem-flow {
+        grid-template-columns: 1fr;
+      }
+
+      .flow-arrow {
+        min-height: 34px;
+        transform: rotate(90deg);
+      }
+
+      .memory-side + .memory-side {
+        border-top: 1px solid var(--line-strong);
+        border-left: 0;
+      }
+
+      .table-scroll { overflow-x: auto; }
+      .result-table { min-width: 620px; }
+      .equation { font-size: 17px; text-align: left; }
+    }
+
+    @media print {
+      body { background: white; font-size: 11pt; }
+      .masthead { border-top-width: 3px; }
+      .masthead-inner, .page-shell { max-width: none; padding-left: 0; padding-right: 0; }
+      .page-shell { display: block; }
+      .toc { display: none; }
+      main { border: 0; box-shadow: none; }
+      section { padding: 28px 0; break-inside: avoid; }
+      figure { break-inside: avoid; }
+      a { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div class="eyebrow">论文解读 / ISAR · 稀疏重建 · 2D-ADMM</div>
+      <h1>二维 ADMM 如何让稀疏 ISAR 成像摆脱巨型 Kronecker 矩阵</h1>
+      <p class="deck">
+        对 Hamid Reza Hashempour 2020 年 IEEE Sensors Journal 论文的中文技术报告：
+        它解决什么问题、公式为何成立、实验能说明什么，以及仓库代码与论文之间如何对应。
+      </p>
+      <div class="meta-line">
+        <span><strong>论文</strong> Sparsity-Driven ISAR Imaging Based on Two-Dimensional ADMM</span>
+        <span><strong>作者</strong> Hamid Reza Hashempour</span>
+        <span><strong>DOI</strong> 10.1109/JSEN.2020.3006105</span>
+        <span><strong>发表</strong> IEEE Sensors Journal, 2020</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="page-shell">
+    <nav class="toc" aria-label="报告目录">
+      <div class="toc-title">阅读导航</div>
+      <a href="#overview">一句话结论</a>
+      <a href="#problem">研究问题</a>
+      <a href="#model">信号模型</a>
+      <a href="#method">2D-ADMM</a>
+      <a href="#efficiency">效率优势</a>
+      <a href="#experiments">实验结果</a>
+      <a href="#code">代码映射</a>
+      <a href="#limits">局限与判断</a>
+      <a class="toc-source" href="./10.1109jsen.2020.3006105.pdf" target="_blank" rel="noopener">打开论文原文</a>
+    </nav>
+
+    <main>
+      <section id="overview">
+        <h2>一句话结论</h2>
+        <p class="lead">
+          这篇文章把 ISAR 稀疏成像从“先向量化、再解一维大问题”改写成“直接对二维图像矩阵做 ADMM”，
+          利用部分傅里叶矩阵的行正交性消掉大规模求逆，在保持同一优化目标的同时显著降低内存和计算负担。
+        </p>
+
+        <div class="summary-strip" aria-label="论文核心摘要">
+          <div class="summary-item">
+            <span class="summary-label">输入</span>
+            <span class="summary-value">有限或欠采样的二维雷达回波</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">输出</span>
+            <span class="summary-value">超分辨率稀疏 ISAR 图像</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">核心手段</span>
+            <span class="summary-value">矩阵 ADMM + 软阈值 + FFT</span>
+          </div>
+        </div>
+
+        <div class="callout">
+          <strong>真正的贡献不只是“用了 ADMM”。</strong>
+          <p>
+            关键在于保留二维可分离结构，不显式构造 <em>F</em><sub>r</sub> ⊗ <em>F</em><sub>a</sub>；
+            再借助 Woodbury 恒等式和部分傅里叶矩阵的正交性，将每轮最难的线性求解变成两侧傅里叶变换。
+          </p>
+        </div>
+      </section>
+
+      <section id="problem">
+        <h2>它要解决什么问题</h2>
+        <p>
+          ISAR 依靠目标相对雷达的转动形成方位向孔径。距离向分辨率依赖大带宽，方位向分辨率依赖较长的相干处理时间；
+          二者都会增加采集、传输和存储压力。与此同时，飞机等目标在成像平面上通常可近似为少量强散射中心，因此图像天然具有稀疏性。
+        </p>
+
+        <div class="problem-flow" aria-label="研究问题流程">
+          <div class="flow-node">
+            <strong>传统距离-多普勒成像</strong>
+            <span>实现简单，但有限孔径下分辨率受限，低信噪比时旁瓣与噪声明显。</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node">
+            <strong>压缩感知建模</strong>
+            <span>利用散射中心稀疏性，从有限测量中恢复高分辨率图像。</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node">
+            <strong>二维矩阵求解</strong>
+            <span>保留距离与方位的可分离结构，避免巨大的一维字典。</span>
+          </div>
+        </div>
+
+        <p>
+          论文将 2D-ADMM 与 2D-FFT、2D-SL0 和 2D-GP-SOONE 比较，关注三个问题：
+          完整采样下的超分辨率、不同 SNR 下的抗噪性，以及距离和方位同时欠采样时的恢复能力。
+        </p>
+
+        <figure>
+          <img src="./report-assets/paper-method-page.png" alt="论文首页，包含标题、摘要和研究动机" loading="lazy">
+          <figcaption>
+            论文首页与摘要。原文将贡献概括为：直接处理二维 ISAR 矩阵、减少存储与运算，并在噪声和欠采样条件下改善结果。
+            <a class="figure-link" href="./10.1109jsen.2020.3006105.pdf#page=2" target="_blank" rel="noopener">查看原页</a>
+          </figcaption>
+        </figure>
+      </section>
+
+      <section id="model">
+        <h2>从散射中心到矩阵模型</h2>
+        <p>
+          论文先假设平动已被补偿，目标在较短 CPI 内近似匀速转动，并且小转角近似成立。完成距离压缩和越距离单元走动补偿后，
+          每个散射中心对距离频率和慢时间分别产生可分离的相位项，所有散射中心叠加后可写成二维矩阵模型：
+        </p>
+
+        <div class="equation" role="img" aria-label="S 等于 Fa 乘 X 乘 Fr 的转置加 Z">
+          <em>S</em> = <em>F</em><sub>a</sub> <em>X</em> <em>F</em><sub>r</sub><sup>T</sup> + <em>Z</em>
+          <span class="equation-caption">论文式 (5)：方位字典 × 稀疏场景 × 距离字典转置 + 复高斯噪声</span>
+        </div>
+
+        <div class="table-scroll">
+          <table class="dim-table">
+            <thead>
+              <tr><th>量</th><th>论文维度</th><th>含义</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><em>S</em></td><td>N × M</td><td>N 个脉冲、M 个距离频率单元的观测</td></tr>
+              <tr><td><em>X</em></td><td>P × Q</td><td>待恢复的二维散射系数；超分辨率时 P &gt; N、Q &gt; M</td></tr>
+              <tr><td><em>F</em><sub>a</sub></td><td>N × P</td><td>方位向部分傅里叶矩阵</td></tr>
+              <tr><td><em>F</em><sub>r</sub></td><td>M × Q</td><td>距离向部分傅里叶矩阵</td></tr>
+              <tr><td><em>Z</em></td><td>N × M</td><td>加性复高斯噪声</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>利用图像稀疏性，论文求解带 ℓ<sub>1</sub> 正则项的最小二乘问题：</p>
+
+        <div class="equation" role="img" aria-label="X 的估计等于数据拟合项加 L1 正则项的最小值">
+          <span style="position:relative"><em>X</em><span style="position:absolute;left:0;right:0;top:-0.8em">^</span></span>
+          = arg min<sub><em>X</em></sub>
+          ½ ‖<em>S</em> − <em>F</em><sub>a</sub><em>X</em><em>F</em><sub>r</sub><sup>T</sup>‖<sub>F</sub><sup>2</sup>
+          + λ‖<em>X</em>‖<sub>1</sub>
+          <span class="equation-caption">论文式 (22)：数据一致性与稀疏性的折中</span>
+        </div>
+
+        <div class="callout warning">
+          <strong>模型成立依赖一组较强前提。</strong>
+          <p>
+            平动需要事先补偿，转速在 CPI 内近似恒定，小转角线性化有效，MTRC 已被校正。论文明确没有处理相位误差和自动聚焦问题。
+          </p>
+        </div>
+      </section>
+
+      <section id="method">
+        <h2>2D-ADMM 是怎样工作的</h2>
+        <p>
+          ADMM 引入辅助矩阵 <em>B</em>，令 <em>X</em> = <em>B</em>：数据拟合留给 <em>X</em>，稀疏正则留给 <em>B</em>，
+          再用缩放对偶变量 <em>V</em> 约束两者一致。每轮包含三个闭式步骤。
+        </p>
+
+        <ol class="step-list">
+          <li>
+            <div>
+              <strong>图像更新：保证数据一致性</strong>
+              <p>先由当前稀疏变量和对偶变量组成 D = B − V，再用观测残差修正 D。部分傅里叶矩阵的行正交性让这个步骤不需要大矩阵求逆。</p>
+            </div>
+          </li>
+          <li>
+            <div>
+              <strong>辅助变量更新：逐元素软阈值</strong>
+              <p>B = S<sub>λ/δ</sub>(X + V)。幅度小于阈值的系数被压到零，其余系数按幅度收缩，从而产生稀疏图像。</p>
+            </div>
+          </li>
+          <li>
+            <div>
+              <strong>对偶更新：逼近 X = B</strong>
+              <p>V ← V + X − B。它累计数据一致性解与稀疏解之间的偏差，推动两者在后续迭代中一致。</p>
+            </div>
+          </li>
+        </ol>
+
+        <div class="equation" role="img" aria-label="二维 ADMM 的 X 更新公式">
+          <em>X</em><sup>j+1</sup> = (<em>B</em><sup>j</sup> − <em>V</em><sup>j</sup>) −
+          <span>1 / (1 + δ)</span>
+          <em>F</em><sub>a</sub><sup>H</sup>
+          [<em>F</em><sub>a</sub>(<em>B</em><sup>j</sup> − <em>V</em><sup>j</sup>)<em>F</em><sub>r</sub><sup>T</sup> − <em>S</em>]
+          <em>F</em><sub>r</sub><sup>*</sup>
+          <span class="equation-caption">论文式 (24)：最昂贵的一步只剩左右两侧傅里叶算子</span>
+        </div>
+
+        <div class="comparison">
+          <div class="comparison-item">
+            <h3>普通 2D-ADMM</h3>
+            <p>直接做矩阵乘法，表达清楚，也允许显式传入满足条件的部分傅里叶字典。</p>
+          </div>
+          <div class="comparison-item">
+            <h3>快速 2D-ADMM</h3>
+            <p>把上述左右乘法换成 FFT/IFFT，单轮复杂度可接近 O(n log n)，但依赖规则的傅里叶字典结构。</p>
+          </div>
+        </div>
+
+        <p>
+          欠采样情形下，论文在方位和距离两侧分别加入二值选样矩阵 Ψ<sub>a</sub>、Ψ<sub>r</sub>。
+          因为这些矩阵由单位阵抽取行得到，同样满足行正交，Woodbury 化简仍然成立，这就是论文所谓的 2D-CS 扩展。
+        </p>
+      </section>
+
+      <section id="efficiency">
+        <h2>为什么二维形式更省</h2>
+        <p>
+          传统写法把 <em>X</em> 按列堆成向量 <em>x</em>，并构造 Φ = <em>F</em><sub>r</sub> ⊗ <em>F</em><sub>a</sub>，
+          得到 <em>s</em> = Φ<em>x</em> + <em>z</em>。数学上完全等价，工程代价却相差很大。
+        </p>
+
+        <div class="memory-figure" aria-label="Yak-42 配置下的一维与二维内存量级对比">
+          <div class="memory-side bad">
+            <strong>显式一维 Kronecker 字典 Φ</strong>
+            <span class="memory-number">约 16 GiB</span>
+            <span class="memory-note">16,384 × 65,536 个复双精度元素，仅 Φ 本身</span>
+          </div>
+          <div class="memory-side good">
+            <strong>二维字典 F<sub>a</sub> 与 F<sub>r</sub></strong>
+            <span class="memory-number">约 2.13 MiB</span>
+            <span class="memory-note">64 × 128 与 256 × 512，共 139,264 个复双精度元素</span>
+          </div>
+        </div>
+
+        <p class="footer-note">
+          上述估算使用论文 Yak-42 设置 N=64、M=256、P=2N、Q=2M，按每个 complex double 16 字节计算，未计工作区。
+        </p>
+
+        <div class="comparison">
+          <div class="comparison-item">
+            <h3>论文给出的 1D 复杂度</h3>
+            <p>在 P=Q 的简化假设下，最坏量级写为 O(P<sup>4</sup>MN)。显式大字典既占内存，也使矩阵向量运算昂贵。</p>
+          </div>
+          <div class="comparison-item">
+            <h3>论文给出的 2D 复杂度</h3>
+            <p>矩阵版本最坏量级为 O(P<sup>3</sup>)；论文称相对于一维形式获得 O(PMN) 的量级收益。</p>
+          </div>
+        </div>
+
+        <div class="callout">
+          <strong>这里的“二维”主要是计算表示方式，不是换了另一个目标函数。</strong>
+          <p>1D-ADMM 与 2D-ADMM 理论上求解同一个 ℓ<sub>1</sub> 正则问题；二维形式只是利用了算子的可分离结构，避免不必要的展开。</p>
+        </div>
+      </section>
+
+      <section id="experiments">
+        <h2>论文给出了什么证据</h2>
+
+        <h3>1. 合成点目标</h3>
+        <p>
+          仿真使用 10 GHz 载频、500 MHz 带宽、50 Hz PRF、50 个脉冲和 50 个距离单元；场景含 11 个理想点散射中心。
+          重建网格取 100 × 100，即两个方向都做 2 倍超分辨率。论文比较 SNR −10 至 30 dB，以及采样率 0.1 至 1 的 NMSE。
+        </p>
+
+        <figure>
+          <img src="./report-assets/paper-simulation-page.png" alt="论文中的合成目标、不同算法成像结果及 NMSE 曲线" loading="lazy">
+          <figcaption>
+            论文 Fig. 2–4：在作者设置下，2D-ADMM 的背景更干净，NMSE 曲线在不同 SNR 和采样率下均低于三个对照方法。
+            <a class="figure-link" href="./10.1109jsen.2020.3006105.pdf#page=6" target="_blank" rel="noopener">查看原页</a>
+          </figcaption>
+        </figure>
+
+        <h3 style="margin-top:38px">2. Yak-42 实测数据</h3>
+        <p>
+          原始数据含 256 个脉冲，每个脉冲 256 个采样点；雷达中心频率 5.52 GHz、带宽 400 MHz、脉冲时宽 25.6 μs。
+          完整采样实验使用 N=64、M=256，并设置 P=2N、Q=2M。作者分别加入 10、5、0 dB 噪声，用图像熵衡量聚焦程度。
+        </p>
+
+        <div class="table-scroll">
+          <table class="result-table">
+            <thead>
+              <tr><th>方法</th><th>SNR 10 dB</th><th>SNR 5 dB</th><th>SNR 0 dB</th><th>趋势</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>2D-FFT</td><td>6.86</td><td>7.72</td><td>8.98</td><td>噪声越强，熵明显升高</td></tr>
+              <tr><td>2D-GP-SOONE</td><td>5.24</td><td>5.93</td><td>7.20</td><td>优于 FFT，但低 SNR 退化</td></tr>
+              <tr><td>2D-SL0</td><td>4.70</td><td>5.32</td><td>6.60</td><td>中等抗噪</td></tr>
+              <tr><td><strong>2D-ADMM</strong></td><td class="best">4.27</td><td class="best">4.30</td><td class="best">4.31</td><td class="best">最低且最稳定</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p class="footer-note">表中数据来自论文 Table II。图像熵越低，通常表示能量越集中、聚焦更好。</p>
+
+        <figure>
+          <img src="./report-assets/paper-yak42-page.png" alt="Yak-42 数据在不同信噪比、算法和采样率下的成像对比" loading="lazy">
+          <figcaption>
+            论文 Fig. 5–6：上半部分按列比较四种算法、按行比较 10/5/0 dB；下半部分展示 12.5%–75% 采样率下的结果。
+            <a class="figure-link" href="./10.1109jsen.2020.3006105.pdf#page=8" target="_blank" rel="noopener">查看原页</a>
+          </figcaption>
+        </figure>
+
+        <details>
+          <summary>查看欠采样实验的图像熵数据</summary>
+          <div class="table-scroll">
+            <table class="result-table">
+              <thead>
+                <tr><th>SNR</th><th>方法</th><th>12.5%</th><th>25%</th><th>50%</th><th>75%</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>10 dB</td><td>2D-GP-SOONE</td><td>5.92</td><td>6.11</td><td>6.36</td><td>6.50</td></tr>
+                <tr><td>10 dB</td><td>2D-SL0</td><td>5.32</td><td>5.65</td><td>6.15</td><td>6.46</td></tr>
+                <tr><td>10 dB</td><td><strong>2D-ADMM</strong></td><td class="best">4.40</td><td class="best">4.69</td><td class="best">4.97</td><td class="best">5.19</td></tr>
+                <tr><td>0 dB</td><td>2D-GP-SOONE</td><td>6.74</td><td>7.41</td><td>8.05</td><td>8.52</td></tr>
+                <tr><td>0 dB</td><td>2D-SL0</td><td>6.49</td><td>7.04</td><td>7.89</td><td>8.48</td></tr>
+                <tr><td>0 dB</td><td><strong>2D-ADMM</strong></td><td class="best">4.45</td><td class="best">4.70</td><td class="best">5.04</td><td class="best">5.40</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </details>
+
+        <div class="callout warning">
+          <strong>如何正确理解这些结果</strong>
+          <p>
+            合成数据的 NMSE 有已知真值，证据相对直接；实测数据没有真值，主要依赖视觉效果和图像熵。
+            熵低说明能量集中，但也可能偏好更强的稀疏化，因此不能单独证明目标细节一定更真实。
+          </p>
+        </div>
+      </section>
+
+      <section id="code">
+        <h2>仓库代码怎样对应论文</h2>
+        <p>
+          本目录是作者提供的 MATLAB 示例实现。论文采用“方位 × 距离”的矩阵布局，而 Yak-42 脚本把数据保存为“距离 × 方位”，
+          因此代码写成 <code>Y = Fr * X * Fa.'</code>；这是转置后的等价表达，不是另一个模型。
+        </p>
+
+        <div class="table-scroll">
+          <table class="code-map">
+            <thead>
+              <tr><th>论文内容</th><th>本地文件</th><th>实现说明</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Algorithm 2 / 式 (24)–(25)</td>
+                <td><a href="./admm_2D.m">admm_2D.m</a></td>
+                <td>矩阵乘法版 2D-ADMM，包含软阈值和对偶更新</td>
+              </tr>
+              <tr>
+                <td>FFT 加速的同一更新</td>
+                <td><a href="./admm_2D_fast.m">admm_2D_fast.m</a></td>
+                <td>用 FFT/IFFT 替代显式傅里叶矩阵乘法</td>
+              </tr>
+              <tr>
+                <td>2D-SL0 对照算法</td>
+                <td><a href="./SL0_2D.m">SL0_2D.m</a></td>
+                <td>平滑 ℓ<sub>0</sub> 近似与可行集投影</td>
+              </tr>
+              <tr>
+                <td>2D-GP-SOONE 对照算法</td>
+                <td><a href="./GP_SOONE.m">GP_SOONE.m</a></td>
+                <td>负指数稀疏近似、自适应步长和投影</td>
+              </tr>
+              <tr>
+                <td>合成目标实验</td>
+                <td><a href="./simulation_2D_ADMM.m">simulation_2D_ADMM.m</a></td>
+                <td>生成 LFM 回波、加噪、脉压并比较四种方法</td>
+              </tr>
+              <tr>
+                <td>Yak-42 完整采样实验</td>
+                <td><a href="./Yak42_ADMM_2D_example.m">Yak42_ADMM_2D_example.m</a></td>
+                <td>读取 <a href="./Yak42.mat">Yak42.mat</a>，输出轮廓图、耗时和图像熵</td>
+              </tr>
+              <tr>
+                <td>论文式 (32)</td>
+                <td><a href="./Entropy_img.m">Entropy_img.m</a></td>
+                <td>根据归一化能量分布计算图像熵</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>代码中的一次 ADMM 迭代</h3>
+        <pre style="overflow:auto;margin:18px 0 0;padding:20px;border-radius:6px;color:#e7f0ef;background:#152126;line-height:1.65"><code style="padding:0;border:0;background:transparent;color:inherit">D = B - U;
+X = D - 1/(delta+1) * Fr' * (Fr*D*Fa.' - Y) * conj(Fa);
+B = sign(X + U) .* max(abs(X + U) - alpha/delta, 0);
+U = U + X - B;</code></pre>
+
+        <p class="footer-note" style="margin-top:12px">
+          这里的 <code>U</code> 对应论文缩放对偶变量 <em>V</em>，<code>alpha</code> 对应 λ；示例固定 δ=1、最多迭代 40 次。
+        </p>
+
+        <div class="callout warning">
+          <strong>论文的 2D 欠采样扩展没有在当前代码包中完整落地。</strong>
+          <p>
+            论文式 (31) 包含 Ψ<sub>a</sub>、Ψ<sub>r</sub> 选样矩阵，但现有两个 ADMM 函数只实现完整观测模型。
+            仓库脚本可以复现完整采样思路，不能直接复现论文全部欠采样实验。
+          </p>
+        </div>
+      </section>
+
+      <section id="limits">
+        <h2>局限、复现风险与总体判断</h2>
+
+        <ul class="bullet-list">
+          <li><strong>场景假设：</strong>平动、MTRC 和相位误差都被排除在优化之外；真实数据若未对齐或未聚焦，稀疏重建可能把模型失配当成散射结构。</li>
+          <li><strong>比较范围：</strong>实验主要对比 2D-FFT、2D-SL0 和 2D-GP-SOONE，没有覆盖更广泛的凸优化、贝叶斯或低秩/稀疏联合方法。</li>
+          <li><strong>指标限制：</strong>实测数据用图像熵作为核心定量指标。它能表示聚焦程度，却不能替代几何真实性、检测率或分类性能。</li>
+          <li><strong>参数依赖：</strong>λ、迭代次数及对照算法的平滑参数均需调节；论文和示例没有给出系统的参数敏感性分析。</li>
+          <li><strong>代码停止条件：</strong><code>admm_2D.m</code> 与快速版本把外层阈值固定为 1e−4；当传入 <code>e=1e-5</code> 时，循环仍可能先按 1e−4 结束。</li>
+          <li><strong>仿真脚本现状：</strong><code>iter=1;200;</code>、<code>SNR_db=10;-10:5:30;</code> 等写法只采用分号前的赋值，原脚本不会直接执行论文所述的 200 次、多 SNR 扫描。</li>
+          <li><strong>数值健壮性：</strong>熵函数对严格零值执行 <code>0*log(0)</code>，GP-SOONE 对零幅度执行除法，边界情况下可能产生 NaN。</li>
+        </ul>
+
+        <div class="verdict">
+          <h3>总体判断</h3>
+          <p>
+            论文最有价值的部分，是把一个本来会因向量化而失去结构的稀疏反演问题，重新写回可分离的二维形式，并给出无需大矩阵求逆的 ADMM 闭式更新。
+            这个思路清晰、实用，也不限于 ISAR：只要二维观测可由左右两个近似正交算子描述，都可以借鉴。
+          </p>
+          <p>
+            但“2D-ADMM 全面优于其他方法”的证据应限定在作者的点目标、Yak-42 数据和参数设置内。
+            若用于实际工程，还需要补上欠采样实现、自动聚焦、稳健停止准则、参数选择和更全面的基准测试。
+          </p>
+        </div>
+
+        <p class="footer-note" style="margin-top:26px">
+          报告依据目录内论文 PDF 与 MATLAB 源码编写。论文 PDF 是 IEEE 接收稿版本，首页附带 ResearchGate 信息；公式编号和实验数据均按该版本整理。
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const links = [...document.querySelectorAll('.toc a[href^="#"]')];
+    const sections = links
+      .map((link) => document.querySelector(link.getAttribute('href')))
+      .filter(Boolean);
+
+    if ('IntersectionObserver' in window) {
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (!visible) return;
+        links.forEach((link) => {
+          const active = link.getAttribute('href') === `#${visible.target.id}`;
+          if (active) link.setAttribute('aria-current', 'true');
+          else link.removeAttribute('aria-current');
+        });
+      }, { rootMargin: '-15% 0px -70% 0px', threshold: [0, 0.15, 0.5] });
+      sections.forEach((section) => observer.observe(section));
+    }
+  </script>
+</body>
+</html>

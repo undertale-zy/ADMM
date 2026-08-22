@@ -1,0 +1,959 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="面向零基础读者的二维 ADMM 稀疏 ISAR 成像图解">
+  <title>零基础看懂二维 ADMM 稀疏 ISAR 成像</title>
+  <style>
+    :root {
+      --ink: #172126;
+      --muted: #596a72;
+      --canvas: #edf1f2;
+      --paper: #ffffff;
+      --line: #d4dde0;
+      --line-dark: #a9b7bc;
+      --teal: #087d75;
+      --teal-soft: #e2f1ee;
+      --red: #c64c3d;
+      --red-soft: #f8e8e5;
+      --yellow: #e4b641;
+      --blue: #285da8;
+      --dark: #111c21;
+      --radius: 6px;
+      --page: 1080px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 20px;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--canvas);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+      font-size: 17px;
+      line-height: 1.8;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: var(--blue);
+      text-underline-offset: 3px;
+      text-decoration-thickness: 1px;
+    }
+
+    a:hover { color: var(--teal); }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    h1 {
+      max-width: 900px;
+      margin-bottom: 18px;
+      font-family: Georgia, "Songti SC", "STSong", serif;
+      font-size: 52px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin-bottom: 24px;
+      font-family: Georgia, "Songti SC", "STSong", serif;
+      font-size: 32px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin-bottom: 8px;
+      font-size: 19px;
+      line-height: 1.45;
+      letter-spacing: 0;
+    }
+
+    p { margin-bottom: 17px; }
+
+    code {
+      padding: 2px 5px;
+      border: 1px solid #ccd6d9;
+      border-radius: 3px;
+      background: #f2f5f5;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.88em;
+    }
+
+    .topbar {
+      border-top: 6px solid var(--ink);
+      border-bottom: 1px solid var(--line);
+      background: var(--paper);
+    }
+
+    .topbar-inner {
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      max-width: var(--page);
+      margin: 0 auto;
+      padding: 14px 24px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .topbar-name { color: var(--teal); }
+
+    .topbar-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+    }
+
+    .topbar-links a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    .intro {
+      background: var(--paper);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .intro-inner {
+      max-width: var(--page);
+      margin: 0 auto;
+      padding: 64px 24px 56px;
+    }
+
+    .kicker {
+      margin-bottom: 12px;
+      color: var(--red);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .intro-text {
+      max-width: 820px;
+      margin-bottom: 30px;
+      color: #35444b;
+      font-size: 21px;
+      line-height: 1.65;
+    }
+
+    .intro-answer {
+      max-width: 900px;
+      padding: 22px 24px;
+      border-left: 5px solid var(--teal);
+      background: var(--teal-soft);
+      font-size: 18px;
+    }
+
+    .intro-answer strong { color: #075f59; }
+
+    .page-nav {
+      overflow-x: auto;
+      border-bottom: 1px solid var(--line);
+      background: #f8faf9;
+    }
+
+    .page-nav-inner {
+      display: flex;
+      gap: 0;
+      max-width: var(--page);
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    .page-nav a {
+      flex: 0 0 auto;
+      padding: 14px 20px;
+      border-right: 1px solid var(--line);
+      color: #48575e;
+      font-size: 14px;
+      font-weight: 650;
+      text-decoration: none;
+    }
+
+    .page-nav a:first-child { border-left: 1px solid var(--line); }
+    .page-nav a:hover { color: var(--ink); background: var(--teal-soft); }
+
+    main {
+      max-width: var(--page);
+      margin: 36px auto 70px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      box-shadow: 0 12px 34px rgba(24, 42, 48, 0.06);
+    }
+
+    section {
+      padding: 52px 62px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    section:last-child { border-bottom: 0; }
+
+    .section-no {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--red);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .lead {
+      color: #35444b;
+      font-size: 19px;
+    }
+
+    .process {
+      display: grid;
+      grid-template-columns: 1fr 34px 1fr 34px 1fr 34px 1fr;
+      align-items: stretch;
+      margin: 30px 0;
+    }
+
+    .process-node {
+      min-width: 0;
+      padding: 18px 15px;
+      border: 1px solid var(--line-dark);
+      border-top: 4px solid var(--teal);
+      background: #fff;
+    }
+
+    .process-node strong {
+      display: block;
+      margin-bottom: 7px;
+      line-height: 1.4;
+    }
+
+    .process-node span {
+      display: block;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .arrow {
+      display: grid;
+      place-items: center;
+      color: var(--red);
+      font-size: 20px;
+      font-weight: 800;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 26px;
+      margin: 30px 0;
+    }
+
+    .concept {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+
+    .concept.teal { border-top: 5px solid var(--teal); }
+    .concept.red { border-top: 5px solid var(--red); }
+    .concept p:last-child { margin-bottom: 0; }
+
+    .isar-visual {
+      position: relative;
+      min-height: 330px;
+      margin: 30px 0 12px;
+      overflow: hidden;
+      border: 1px solid #34464d;
+      border-radius: var(--radius);
+      background: var(--dark);
+    }
+
+    .axis-x,
+    .axis-y {
+      position: absolute;
+      background: #506168;
+    }
+
+    .axis-x {
+      right: 46px;
+      bottom: 46px;
+      left: 46px;
+      height: 1px;
+    }
+
+    .axis-y {
+      top: 36px;
+      bottom: 46px;
+      left: 46px;
+      width: 1px;
+    }
+
+    .axis-label-x,
+    .axis-label-y {
+      position: absolute;
+      color: #a8bbc1;
+      font-size: 12px;
+    }
+
+    .axis-label-x { right: 26px; bottom: 16px; }
+    .axis-label-y { top: 12px; left: 18px; }
+
+    .scatter {
+      position: absolute;
+      left: var(--x);
+      top: var(--y);
+      width: var(--size, 9px);
+      height: var(--size, 9px);
+      border: 2px solid rgba(255, 255, 255, 0.35);
+      border-radius: 50%;
+      background: var(--yellow);
+      box-shadow: 0 0 13px rgba(228, 182, 65, 0.72);
+      transform: translate(-50%, -50%);
+      font-size: 0;
+    }
+
+    .scatter.secondary {
+      background: #39b8ac;
+      box-shadow: 0 0 11px rgba(57, 184, 172, 0.65);
+    }
+
+    .visual-caption {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    .definition {
+      margin: 28px 0;
+      padding: 22px 24px;
+      border-left: 4px solid var(--teal);
+      background: var(--teal-soft);
+    }
+
+    .definition.warning {
+      border-left-color: var(--red);
+      background: var(--red-soft);
+    }
+
+    .definition strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .definition p:last-child { margin-bottom: 0; }
+
+    .compare-table {
+      width: 100%;
+      margin: 28px 0;
+      border-collapse: collapse;
+      font-size: 15px;
+    }
+
+    .compare-table th,
+    .compare-table td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .compare-table th {
+      color: #34444a;
+      background: #edf2f3;
+      font-size: 13px;
+    }
+
+    .matrix-demo {
+      display: grid;
+      grid-template-columns: 1fr 46px 1fr;
+      gap: 0;
+      align-items: stretch;
+      margin: 30px 0;
+    }
+
+    .matrix-side {
+      padding: 24px;
+      border: 1px solid var(--line-dark);
+    }
+
+    .matrix-side.old { background: var(--red-soft); }
+    .matrix-side.new { background: var(--teal-soft); }
+
+    .matrix-side strong { display: block; margin-bottom: 7px; }
+
+    .matrix-value {
+      display: block;
+      margin: 10px 0 3px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 34px;
+      font-weight: 800;
+      line-height: 1.15;
+    }
+
+    .matrix-note {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .matrix-arrow {
+      display: grid;
+      place-items: center;
+      color: var(--red);
+      font-size: 24px;
+      font-weight: 800;
+    }
+
+    .admm-cycle {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin: 30px 0;
+      counter-reset: cycle;
+    }
+
+    .cycle-step {
+      counter-increment: cycle;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    .cycle-step::before {
+      content: "0" counter(cycle);
+      display: block;
+      margin-bottom: 10px;
+      color: var(--red);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .cycle-step p { margin-bottom: 0; color: var(--muted); font-size: 15px; }
+
+    .plain-formula {
+      margin: 26px 0;
+      padding: 22px 24px;
+      overflow-x: auto;
+      border: 1px solid #31444b;
+      border-radius: var(--radius);
+      color: #e7eeee;
+      background: var(--dark);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 21px;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .formula-note {
+      display: block;
+      margin-top: 7px;
+      color: #a8bbc1;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12px;
+      white-space: normal;
+    }
+
+    .control-line {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      margin: 28px 0;
+      border-top: 1px solid var(--line-dark);
+      border-bottom: 1px solid var(--line-dark);
+    }
+
+    .control-item {
+      padding: 20px;
+      border-right: 1px solid var(--line);
+    }
+
+    .control-item:last-child { border-right: 0; }
+    .control-item strong { display: block; margin-bottom: 5px; }
+    .control-item span { display: block; color: var(--muted); font-size: 14px; }
+
+    figure { margin: 32px 0 8px; }
+
+    figure img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border: 1px solid var(--line);
+      background: white;
+    }
+
+    figcaption {
+      padding-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .outcome-list,
+    .limit-list {
+      margin: 20px 0 5px;
+      padding-left: 22px;
+    }
+
+    .outcome-list li,
+    .limit-list li {
+      margin-bottom: 12px;
+      padding-left: 5px;
+    }
+
+    .outcome-list li::marker { color: var(--teal); }
+    .limit-list li::marker { color: var(--red); }
+
+    .bottom-line {
+      padding: 28px;
+      border: 1px solid var(--line-dark);
+      border-top: 5px solid var(--ink);
+      background: #f6f8f8;
+      font-size: 19px;
+    }
+
+    .bottom-line p:last-child { margin-bottom: 0; }
+
+    .source-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 24px;
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    @media (max-width: 820px) {
+      h1 { font-size: 40px; }
+      main { margin: 22px 16px 50px; }
+      section { padding: 42px 34px; }
+
+      .process {
+        grid-template-columns: 1fr;
+      }
+
+      .arrow {
+        min-height: 34px;
+        transform: rotate(90deg);
+      }
+
+      .admm-cycle { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 620px) {
+      body { font-size: 15px; }
+      h1 { font-size: 32px; }
+      h2 { font-size: 26px; }
+
+      .topbar-inner {
+        display: block;
+        padding: 11px 18px;
+      }
+
+      .topbar-links { margin-top: 5px; }
+      .intro-inner { padding: 42px 20px 38px; }
+      .intro-text { font-size: 18px; }
+      .page-nav-inner { padding: 0; }
+
+      main { margin: 14px 10px 40px; }
+      section { padding: 34px 21px; }
+
+      .two-col,
+      .matrix-demo,
+      .control-line {
+        grid-template-columns: 1fr;
+      }
+
+      .matrix-arrow {
+        min-height: 38px;
+        transform: rotate(90deg);
+      }
+
+      .control-item {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .control-item:last-child { border-bottom: 0; }
+      .isar-visual { min-height: 280px; }
+      .table-scroll { overflow-x: auto; }
+      .compare-table { min-width: 610px; }
+      .plain-formula { font-size: 17px; text-align: left; }
+    }
+
+    @media print {
+      body { background: white; font-size: 11pt; }
+      .topbar-links, .page-nav { display: none; }
+      main { margin: 0; border: 0; box-shadow: none; }
+      section { padding: 28px 0; break-inside: avoid; }
+      figure { break-inside: avoid; }
+      a { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="topbar-name">二维 ADMM 稀疏 ISAR 成像</div>
+      <div class="topbar-links">
+        <a href="./article_report.html">技术版报告</a>
+        <a href="./10.1109jsen.2020.3006105.pdf" target="_blank" rel="noopener">论文原文</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="intro">
+    <div class="intro-inner">
+      <div class="kicker">从零开始理解这篇论文</div>
+      <h1>雷达收到一堆回波，怎样算出一张飞机图像？</h1>
+      <p class="intro-text">
+        这篇论文做的事情，可以理解成：从有限、带噪声的雷达测量中寻找飞机上的强反射点，
+        同时改变计算方法，避免为了恢复一张二维图像而建立一个大得难以使用的矩阵。
+      </p>
+      <div class="intro-answer">
+        <strong>先记住最终答案：</strong>
+        作者没有发明一种新雷达，而是提出了一种更省内存、更适合二维数据的图像重建算法。
+      </div>
+    </div>
+  </div>
+
+  <nav class="page-nav" aria-label="页面目录">
+    <div class="page-nav-inner">
+      <a href="#isar">什么是 ISAR</a>
+      <a href="#traditional">传统方法</a>
+      <a href="#sparse">稀疏恢复</a>
+      <a href="#contribution">作者做了什么</a>
+      <a href="#admm">ADMM 怎么工作</a>
+      <a href="#result">得到什么结果</a>
+      <a href="#boundary">没有解决什么</a>
+    </div>
+  </nav>
+
+  <main>
+    <section id="isar">
+      <span class="section-no">01</span>
+      <h2>先理解：什么是 ISAR 成像</h2>
+      <p class="lead">
+        普通相机接收可见光，雷达则主动发射电磁波，再记录目标反射回来的信号。ISAR 的目标，是把这些回波计算成一张二维反射强度图。
+      </p>
+
+      <div class="process" aria-label="ISAR 成像过程">
+        <div class="process-node">
+          <strong>发射脉冲</strong>
+          <span>雷达向飞机发射电磁波。</span>
+        </div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="process-node">
+          <strong>接收回波</strong>
+          <span>机头、机翼等位置产生反射。</span>
+        </div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="process-node">
+          <strong>积累多次观测</strong>
+          <span>利用目标运动获得不同角度的信息。</span>
+        </div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="process-node">
+          <strong>计算二维图像</strong>
+          <span>确定强反射点在成像平面的位置。</span>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <div class="concept teal">
+          <h3>距离向</h3>
+          <p>根据回波到达时间和频率信息，判断散射点离雷达多远。雷达带宽越大，通常越容易区分相邻的距离。</p>
+        </div>
+        <div class="concept red">
+          <h3>横向或方位向</h3>
+          <p>利用目标转动带来的多普勒差异，判断散射点在左右方向的位置。观测时间和角度变化决定这一方向的分辨能力。</p>
+        </div>
+      </div>
+
+      <div class="isar-visual" role="img" aria-label="由少量强散射点组成的示意 ISAR 图像">
+        <div class="axis-x"></div>
+        <div class="axis-y"></div>
+        <div class="axis-label-x">横向位置</div>
+        <div class="axis-label-y">距离</div>
+        <span class="scatter" style="--x:82%;--y:50%;--size:13px" aria-hidden="true">.</span>
+        <span class="scatter" style="--x:69%;--y:50%;--size:10px" aria-hidden="true">.</span>
+        <span class="scatter secondary" style="--x:56%;--y:50%;--size:11px" aria-hidden="true">.</span>
+        <span class="scatter" style="--x:42%;--y:50%;--size:9px" aria-hidden="true">.</span>
+        <span class="scatter secondary" style="--x:29%;--y:50%;--size:9px" aria-hidden="true">.</span>
+        <span class="scatter" style="--x:20%;--y:50%;--size:10px" aria-hidden="true">.</span>
+        <span class="scatter" style="--x:51%;--y:20%;--size:10px" aria-hidden="true">.</span>
+        <span class="scatter secondary" style="--x:53%;--y:34%;--size:9px" aria-hidden="true">.</span>
+        <span class="scatter secondary" style="--x:53%;--y:66%;--size:9px" aria-hidden="true">.</span>
+        <span class="scatter" style="--x:51%;--y:82%;--size:10px" aria-hidden="true">.</span>
+        <span class="scatter" style="--x:29%;--y:36%;--size:8px" aria-hidden="true">.</span>
+        <span class="scatter" style="--x:29%;--y:64%;--size:8px" aria-hidden="true">.</span>
+      </div>
+      <p class="visual-caption">ISAR 图像不是普通照片。亮点表示雷达反射较强的位置，点的排列大致反映目标结构。</p>
+    </section>
+
+    <section id="traditional">
+      <span class="section-no">02</span>
+      <h2>传统方法：对回波做二维 FFT</h2>
+      <p>
+        常见的距离-多普勒方法主要通过二维 FFT，把“频率 × 时间”的回波矩阵转换成“距离 × 横向位置”的图像。
+        它速度快、实现简单，是理解后续方法的基准。
+      </p>
+
+      <div class="plain-formula">
+        二维回波矩阵 → 二维 FFT → ISAR 图像
+        <span class="formula-note">距离频率提供距离信息，慢时间中的多普勒变化提供横向信息</span>
+      </div>
+
+      <div class="two-col">
+        <div class="concept teal">
+          <h3>优点</h3>
+          <p>计算快，流程成熟，数据质量好、采样充分时可以得到稳定结果。</p>
+        </div>
+        <div class="concept red">
+          <h3>局限</h3>
+          <p>分辨率受到带宽和观测时间限制；数据不足、噪声较强时，背景会出现旁瓣、杂点和模糊。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="sparse">
+      <span class="section-no">03</span>
+      <h2>新的想法：飞机图像其实很“稀疏”</h2>
+      <p>
+        飞机占据整个成像区域的一小部分，而且真正产生强回波的通常只是机头、机翼边缘、发动机等少量位置。
+        因此，在一张很大的图像中，大多数像素接近零，只有少数像素明显非零。
+      </p>
+
+      <div class="definition">
+        <strong>稀疏是什么意思？</strong>
+        <p>不是说飞机结构简单，而是说在选定的像素网格上，真正需要保留的强散射系数数量相对较少。</p>
+      </div>
+
+      <p>于是成像问题可以改写成：从所有可能图像中，寻找一张同时满足两个条件的图像。</p>
+
+      <table class="compare-table">
+        <thead>
+          <tr><th>要求</th><th>通俗解释</th><th>如果只考虑这一项</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>符合回波</strong></td>
+            <td>用这张图预测出的雷达回波，应当接近真实测量。</td>
+            <td>可能把噪声也解释成目标细节。</td>
+          </tr>
+          <tr>
+            <td><strong>图像稀疏</strong></td>
+            <td>尽量只保留少量可信的强散射点。</td>
+            <td>可能删除真实但较弱的反射。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="plain-formula">
+        总代价 = 回波拟合误差 + λ × 图像稀疏程度
+        <span class="formula-note">λ 控制“相信观测数据”和“让图像更干净”之间的平衡</span>
+      </div>
+
+      <div class="control-line">
+        <div class="control-item">
+          <strong>λ 太小</strong>
+          <span>图像保留较多细节，也可能留下很多噪点。</span>
+        </div>
+        <div class="control-item">
+          <strong>λ 合适</strong>
+          <span>保留主要散射结构，同时压制背景噪声。</span>
+        </div>
+        <div class="control-item">
+          <strong>λ 太大</strong>
+          <span>背景很干净，但真实的弱散射点也可能消失。</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="contribution">
+      <span class="section-no">04</span>
+      <h2>作者真正改进的是计算方式</h2>
+      <p class="lead">
+        压缩感知 ISAR 和 ADMM 都不是这篇论文首次提出的。论文的关键贡献，是让 ADMM 直接处理二维图像矩阵，不再把二维问题强行展开成一个巨型一维问题。
+      </p>
+
+      <h3>旧方法为什么占内存</h3>
+      <p>
+        传统推导会把二维图像逐列拉成一个长向量，再建立一个矩阵，记录“每个图像像素如何影响每个回波测量值”。
+        这个矩阵由距离字典和方位字典做 Kronecker 积得到，尺寸增长非常快。
+      </p>
+
+      <div class="matrix-demo" aria-label="一维展开与二维计算的内存对比">
+        <div class="matrix-side old">
+          <strong>旧的一维展开</strong>
+          <span class="matrix-value">约 16 GiB</span>
+          <span class="matrix-note">Yak-42 论文设置下，仅显式 Kronecker 观测矩阵的复双精度存储量</span>
+        </div>
+        <div class="matrix-arrow" aria-hidden="true">→</div>
+        <div class="matrix-side new">
+          <strong>新的二维表示</strong>
+          <span class="matrix-value">约 2.13 MiB</span>
+          <span class="matrix-note">只保存距离与方位两个傅里叶字典，不包含算法工作区</span>
+        </div>
+      </div>
+
+      <h3>二维方法为什么省</h3>
+      <p>
+        作者保留图像的行列结构，分别处理距离方向和方位方向。两种写法描述的是同一个物理模型，二维写法却不需要构造大矩阵。
+      </p>
+
+      <div class="plain-formula">
+        S = F<sub>a</sub> X F<sub>r</sub><sup>T</sup> + Z
+        <span class="formula-note">方位变换 × 二维图像 × 距离变换 + 噪声</span>
+      </div>
+
+      <div class="two-col">
+        <div class="concept red">
+          <h3>一维思路</h3>
+          <p>把整张二维表拉成一行，再用一个巨大的转换矩阵一次性描述所有关系。</p>
+        </div>
+        <div class="concept teal">
+          <h3>二维思路</h3>
+          <p>保留二维表格，分别从左侧和右侧处理两个方向，避免重复存储可分离结构。</p>
+        </div>
+      </div>
+
+      <div class="definition">
+        <strong>因此，“二维”主要意味着计算表示更合理。</strong>
+        <p>论文中的 1D-ADMM 和 2D-ADMM 理论上解决同一个优化问题；二维版本主要减少内存和运算，并不凭空增加雷达获得的信息。</p>
+      </div>
+    </section>
+
+    <section id="admm">
+      <span class="section-no">05</span>
+      <h2>ADMM 每一轮在做什么</h2>
+      <p>
+        “符合回波”和“图像稀疏”是两个不同要求。ADMM 的做法是把它们分开处理，再不断协调，直到两边给出的图像基本一致。
+      </p>
+
+      <div class="admm-cycle">
+        <div class="cycle-step">
+          <h3>根据回波修正图像</h3>
+          <p>检查当前图像预测出的回波与真实回波有多大差异，然后修正图像。</p>
+        </div>
+        <div class="cycle-step">
+          <h3>压缩较小的像素</h3>
+          <p>执行软阈值：小系数压成零，大系数适当缩小，让图像变得稀疏。</p>
+        </div>
+        <div class="cycle-step">
+          <h3>记录两者的分歧</h3>
+          <p>累计“数据解”和“稀疏解”的差异，下一轮据此继续协调。</p>
+        </div>
+      </div>
+
+      <div class="process" aria-label="ADMM 循环">
+        <div class="process-node">
+          <strong>当前图像</strong>
+          <span>从上一次迭代得到估计。</span>
+        </div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="process-node">
+          <strong>符合测量</strong>
+          <span>修正与真实回波不一致的部分。</span>
+        </div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="process-node">
+          <strong>执行稀疏化</strong>
+          <span>删除或削弱不可信的小系数。</span>
+        </div>
+        <div class="arrow" aria-hidden="true">↺</div>
+        <div class="process-node">
+          <strong>继续迭代</strong>
+          <span>直到图像变化已经很小。</span>
+        </div>
+      </div>
+
+      <p>
+        通常第一步需要解一个很大的线性方程。作者利用部分傅里叶矩阵的正交性和 Woodbury 恒等式，
+        把它化简成左右两侧的傅里叶运算；规则采样时还能用 FFT/IFFT 加速。
+      </p>
+
+      <div class="definition warning">
+        <strong>快速版本有适用条件。</strong>
+        <p>FFT 加速依赖代码中的规则傅里叶字典结构。如果换成任意观测矩阵，不能只根据矩阵尺寸直接使用快速版本。</p>
+      </div>
+    </section>
+
+    <section id="result">
+      <span class="section-no">06</span>
+      <h2>论文声称得到了什么结果</h2>
+      <p>
+        作者用 11 个理想点目标和 Yak-42 实测数据做实验，并与 2D-FFT、2D-SL0、2D-GP-SOONE 比较。
+        在论文采用的参数下，2D-ADMM 的背景更干净，在低信噪比和欠采样条件下也更稳定。
+      </p>
+
+      <figure>
+        <img src="./report-assets/paper-simulation-page.png" alt="论文中的合成目标成像结果与误差曲线" loading="lazy">
+        <figcaption>
+          合成点目标实验。论文给出的图像和 NMSE 曲线显示，2D-ADMM 在所测试的 SNR 与采样率下误差更低。
+          <a href="./10.1109jsen.2020.3006105.pdf#page=6" target="_blank" rel="noopener">查看论文原页</a>
+        </figcaption>
+      </figure>
+
+      <figure>
+        <img src="./report-assets/paper-yak42-page.png" alt="Yak-42 数据在不同算法、信噪比和采样率下的成像结果" loading="lazy">
+        <figcaption>
+          Yak-42 实测数据。上半部分按列比较四种方法，按行比较 10、5、0 dB；2D-ADMM 位于最右一列。
+          <a href="./10.1109jsen.2020.3006105.pdf#page=8" target="_blank" rel="noopener">查看论文原页</a>
+        </figcaption>
+      </figure>
+
+      <ul class="outcome-list">
+        <li><strong>计算方面：</strong>避免显式 Kronecker 大矩阵，减少内存和矩阵运算。</li>
+        <li><strong>图像方面：</strong>利用稀疏正则压制背景噪声，突出少量强散射点。</li>
+        <li><strong>数据方面：</strong>论文将公式推广到距离和方位同时欠采样的情况。</li>
+      </ul>
+
+      <div class="definition warning">
+        <strong>图像质量提高与二维计算加速是两件事。</strong>
+        <p>
+          1D-ADMM 与 2D-ADMM 的目标相同，二维形式主要提高效率；相对于 FFT、SL0 等方法的图像改善，来自 ADMM 求解的 ℓ<sub>1</sub> 稀疏模型。
+        </p>
+      </div>
+    </section>
+
+    <section id="boundary">
+      <span class="section-no">07</span>
+      <h2>它没有解决完整的 ISAR 成像流程</h2>
+      <p>
+        论文关注的是“完成必要预处理后，怎样恢复稀疏图像”。它假设一部分困难问题已经被处理，因此不能把代码直接理解成从原始雷达数据到最终图像的完整系统。
+      </p>
+
+      <ul class="limit-list">
+        <li>目标平动已经补偿。</li>
+        <li>越距离单元走动已经校正。</li>
+        <li>目标在观测期间近似匀速转动，小转角近似成立。</li>
+        <li>相位误差没有纳入模型，论文也没有实现自动聚焦。</li>
+        <li>当前代码包没有完整实现论文中的二维欠采样 ADMM 公式。</li>
+      </ul>
+
+      <div class="bottom-line">
+        <h3>最后用一句话概括</h3>
+        <p>
+          作者发现传统稀疏 ISAR 方法把二维图像拉直后会产生一个巨大矩阵，于是设计了直接在二维矩阵上运行的 ADMM，
+          让距离和方位两个方向分别计算，并利用 FFT 加速，从而用更少的内存恢复较干净的稀疏 ISAR 图像。
+        </p>
+      </div>
+
+      <div class="source-links">
+        <a href="./article_report.html">阅读包含公式、复杂度和代码审查的技术版报告</a>
+        <a href="./admm_2D.m">查看普通 2D-ADMM 代码</a>
+        <a href="./admm_2D_fast.m">查看快速 2D-ADMM 代码</a>
+        <a href="./Yak42_ADMM_2D_example.m">查看 Yak-42 示例</a>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,1221 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="从 ISAR 观测模型连续推导二维 ADMM：解释 X̂、arg min、B、V、D 及每一步更新为何成立">
+  <title>从雷达回波到二维 ADMM：不跳步的完整推导</title>
+  <style>
+    :root {
+      --ink: #172126;
+      --muted: #5a6970;
+      --paper: #ffffff;
+      --canvas: #edf1f2;
+      --line: #d5dde0;
+      --line-dark: #a9b7bc;
+      --teal: #087d75;
+      --teal-soft: #e2f1ee;
+      --coral: #c64c3d;
+      --coral-soft: #f8e8e5;
+      --blue: #285da8;
+      --blue-soft: #e8eef8;
+      --gold: #b47b12;
+      --gold-soft: #fbf2dc;
+      --dark: #132026;
+      --dark-line: #33464e;
+      --radius: 6px;
+      --page: 1120px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 24px;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--canvas);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+      font-size: 17px;
+      line-height: 1.82;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: var(--blue);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    h1 {
+      max-width: 920px;
+      margin-bottom: 20px;
+      font-family: Georgia, "Songti SC", "STSong", serif;
+      font-size: 50px;
+      line-height: 1.16;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin-bottom: 23px;
+      font-family: Georgia, "Songti SC", "STSong", serif;
+      font-size: 31px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin-bottom: 9px;
+      font-size: 19px;
+      line-height: 1.45;
+      letter-spacing: 0;
+    }
+
+    p { margin-bottom: 17px; }
+
+    code {
+      padding: 2px 5px;
+      border: 1px solid #ccd6d9;
+      border-radius: 3px;
+      background: #f2f5f5;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.88em;
+    }
+
+    .topbar {
+      border-top: 6px solid var(--ink);
+      border-bottom: 1px solid var(--line);
+      background: var(--paper);
+    }
+
+    .topbar-inner {
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      max-width: var(--page);
+      margin: 0 auto;
+      padding: 14px 24px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .topbar-name { color: var(--teal); }
+
+    .topbar-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+    }
+
+    .topbar-links a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    .hero {
+      border-bottom: 1px solid var(--line);
+      background: var(--paper);
+    }
+
+    .hero-inner {
+      max-width: var(--page);
+      margin: 0 auto;
+      padding: 62px 24px 52px;
+    }
+
+    .eyebrow {
+      margin-bottom: 13px;
+      color: var(--coral);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .deck {
+      max-width: 850px;
+      margin-bottom: 28px;
+      color: #34434a;
+      font-size: 21px;
+      line-height: 1.65;
+    }
+
+    .hero-question {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      max-width: 930px;
+      border-top: 1px solid var(--line-dark);
+      border-bottom: 1px solid var(--line-dark);
+    }
+
+    .hero-question div {
+      padding: 18px 20px;
+      border-right: 1px solid var(--line);
+    }
+
+    .hero-question div:first-child { padding-left: 0; }
+    .hero-question div:last-child { border-right: 0; }
+
+    .hero-question strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .hero-question span {
+      display: block;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .page-nav {
+      overflow-x: auto;
+      border-bottom: 1px solid var(--line);
+      background: #f8faf9;
+    }
+
+    .page-nav-inner {
+      display: flex;
+      max-width: var(--page);
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    .page-nav a {
+      flex: 0 0 auto;
+      padding: 14px 18px;
+      border-right: 1px solid var(--line);
+      color: #48575e;
+      font-size: 14px;
+      font-weight: 650;
+      text-decoration: none;
+    }
+
+    .page-nav a:first-child { border-left: 1px solid var(--line); }
+    .page-nav a:hover { color: var(--ink); background: var(--teal-soft); }
+
+    main {
+      max-width: var(--page);
+      margin: 36px auto 72px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      box-shadow: 0 12px 35px rgba(24, 42, 48, 0.06);
+    }
+
+    section {
+      padding: 50px 62px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    section:last-child { border-bottom: 0; }
+
+    .section-no {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--coral);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .lead {
+      color: #34434a;
+      font-size: 19px;
+      line-height: 1.75;
+    }
+
+    .equation {
+      margin: 26px 0;
+      padding: 21px 24px;
+      overflow-x: auto;
+      border: 1px solid var(--dark-line);
+      border-radius: var(--radius);
+      color: #e9f0f0;
+      background: var(--dark);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 22px;
+      line-height: 1.65;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .equation.multiline {
+      white-space: normal;
+    }
+
+    .equation-line {
+      display: block;
+      min-width: max-content;
+    }
+
+    .equation-note {
+      display: block;
+      margin-top: 8px;
+      color: #a9bac0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: normal;
+    }
+
+    .symbol-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0;
+      margin: 28px 0;
+      border: 1px solid var(--line-dark);
+    }
+
+    .symbol {
+      display: grid;
+      grid-template-columns: 90px 1fr;
+      min-width: 0;
+      padding: 17px 18px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .symbol:nth-child(2n) { border-right: 0; }
+    .symbol:nth-last-child(-n+2) { border-bottom: 0; }
+
+    .symbol-name {
+      color: var(--teal);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 20px;
+      font-weight: 800;
+    }
+
+    .symbol-role strong {
+      display: block;
+      margin-bottom: 2px;
+      font-size: 14px;
+    }
+
+    .symbol-role span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .callout {
+      margin: 28px 0;
+      padding: 21px 24px;
+      border-left: 4px solid var(--teal);
+      background: var(--teal-soft);
+    }
+
+    .callout.warning {
+      border-left-color: var(--coral);
+      background: var(--coral-soft);
+    }
+
+    .callout.blue {
+      border-left-color: var(--blue);
+      background: var(--blue-soft);
+    }
+
+    .callout strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    .callout p:last-child { margin-bottom: 0; }
+
+    .count-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      margin: 28px 0;
+    }
+
+    .count-box {
+      padding: 21px;
+      border: 1px solid var(--line);
+      border-top: 5px solid var(--coral);
+      border-radius: var(--radius);
+    }
+
+    .count-box:last-child { border-top-color: var(--teal); }
+
+    .count-value {
+      display: block;
+      margin: 8px 0 3px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 34px;
+      font-weight: 800;
+      line-height: 1.15;
+    }
+
+    .count-box span:last-child {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .requirement-flow {
+      display: grid;
+      grid-template-columns: 1fr 42px 1fr 42px 1fr;
+      align-items: stretch;
+      margin: 28px 0;
+    }
+
+    .requirement {
+      padding: 19px;
+      border: 1px solid var(--line-dark);
+      border-top: 4px solid var(--teal);
+    }
+
+    .requirement:last-child { border-top-color: var(--coral); }
+
+    .requirement strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    .requirement span {
+      display: block;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .flow-arrow {
+      display: grid;
+      place-items: center;
+      color: var(--coral);
+      font-size: 22px;
+      font-weight: 800;
+    }
+
+    .term-table,
+    .role-table,
+    .notation-table {
+      width: 100%;
+      margin: 26px 0;
+      border-collapse: collapse;
+      font-size: 15px;
+    }
+
+    th, td {
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #34444a;
+      background: #edf2f3;
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    tbody tr:hover { background: #f7f9f9; }
+
+    .logic-chain {
+      margin: 28px 0;
+      padding: 0;
+      list-style: none;
+      counter-reset: chain;
+    }
+
+    .logic-chain li {
+      counter-increment: chain;
+      display: grid;
+      grid-template-columns: 48px 1fr;
+      gap: 16px;
+      padding: 17px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .logic-chain li:last-child { border-bottom: 1px solid var(--line); }
+
+    .logic-chain li::before {
+      content: counter(chain, decimal-leading-zero);
+      color: var(--coral);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .logic-chain strong {
+      display: block;
+      margin-bottom: 3px;
+    }
+
+    .logic-chain p {
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .derivation {
+      margin: 28px 0;
+      border-left: 3px solid var(--line-dark);
+    }
+
+    .derive-step {
+      position: relative;
+      padding: 0 0 24px 28px;
+    }
+
+    .derive-step:last-child { padding-bottom: 0; }
+
+    .derive-step::before {
+      content: "";
+      position: absolute;
+      top: 8px;
+      left: -7px;
+      width: 11px;
+      height: 11px;
+      border: 2px solid var(--paper);
+      border-radius: 50%;
+      background: var(--teal);
+      box-shadow: 0 0 0 1px var(--teal);
+    }
+
+    .derive-step strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    .derive-step p { margin-bottom: 8px; }
+
+    .mini-equation {
+      overflow-x: auto;
+      padding: 10px 14px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #f5f7f7;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 18px;
+      white-space: nowrap;
+    }
+
+    .variable-cards {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 13px;
+      margin: 28px 0;
+    }
+
+    .variable-card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-top: 5px solid var(--teal);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    .variable-card:nth-child(2) { border-top-color: var(--coral); }
+    .variable-card:nth-child(3) { border-top-color: var(--blue); }
+    .variable-card:nth-child(4) { border-top-color: var(--gold); }
+
+    .variable-letter {
+      display: block;
+      margin-bottom: 9px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 29px;
+      font-weight: 800;
+    }
+
+    .variable-card strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 14px;
+    }
+
+    .variable-card span:last-child {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .iteration-map {
+      margin: 30px 0;
+      border: 1px solid var(--line-dark);
+    }
+
+    .iteration-row {
+      display: grid;
+      grid-template-columns: 76px 1fr 1.25fr;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .iteration-row:last-child { border-bottom: 0; }
+
+    .iteration-cell {
+      padding: 15px 17px;
+      border-right: 1px solid var(--line);
+    }
+
+    .iteration-cell:last-child { border-right: 0; }
+
+    .iteration-index {
+      display: grid;
+      place-items: center;
+      color: var(--coral);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .iteration-cell strong { display: block; margin-bottom: 3px; }
+
+    .iteration-cell span {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .memory-compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      margin: 28px 0;
+      border: 1px solid var(--line-dark);
+    }
+
+    .memory-side { padding: 22px; }
+    .memory-side:first-child { background: var(--coral-soft); }
+    .memory-side:last-child { border-left: 1px solid var(--line-dark); background: var(--teal-soft); }
+
+    .memory-value {
+      display: block;
+      margin: 7px 0 2px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 33px;
+      font-weight: 800;
+    }
+
+    .memory-side span:last-child {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .final-chain {
+      margin: 28px 0;
+      padding: 26px;
+      border: 1px solid var(--line-dark);
+      border-top: 5px solid var(--ink);
+      background: #f6f8f8;
+    }
+
+    .final-chain p:last-child { margin-bottom: 0; }
+
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 24px;
+      margin-top: 25px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    @media (max-width: 860px) {
+      h1 { font-size: 40px; }
+      main { margin: 24px 16px 54px; }
+      section { padding: 42px 35px; }
+      .variable-cards { grid-template-columns: 1fr 1fr; }
+      .requirement-flow { grid-template-columns: 1fr; }
+      .flow-arrow { min-height: 34px; transform: rotate(90deg); }
+    }
+
+    @media (max-width: 620px) {
+      body { font-size: 15px; }
+      h1 { font-size: 32px; }
+      h2 { font-size: 26px; }
+      .topbar-inner { display: block; padding: 11px 18px; }
+      .topbar-links { margin-top: 5px; }
+      .hero-inner { padding: 42px 20px 38px; }
+      .deck { font-size: 18px; }
+      .hero-question,
+      .symbol-grid,
+      .count-grid,
+      .variable-cards,
+      .memory-compare {
+        grid-template-columns: 1fr;
+      }
+      .hero-question div,
+      .symbol,
+      .symbol:nth-child(2n),
+      .symbol:nth-last-child(-n+2) {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .hero-question div:last-child,
+      .symbol:last-child { border-bottom: 0; }
+      .hero-question div:first-child { padding-left: 20px; }
+      .page-nav-inner { padding: 0; }
+      main { margin: 14px 10px 42px; }
+      section { padding: 34px 21px; }
+      .iteration-row { grid-template-columns: 54px 1fr; }
+      .iteration-row .iteration-cell:last-child {
+        grid-column: 2;
+        border-top: 1px solid var(--line);
+        border-right: 0;
+      }
+      .memory-side:last-child { border-top: 1px solid var(--line-dark); border-left: 0; }
+      .table-scroll { overflow-x: auto; }
+      .term-table, .role-table, .notation-table { min-width: 620px; }
+      .equation { font-size: 17px; text-align: left; }
+    }
+
+    @media print {
+      body { background: white; font-size: 11pt; }
+      .topbar-links, .page-nav { display: none; }
+      main { margin: 0; border: 0; box-shadow: none; }
+      section { padding: 28px 0; break-inside: avoid; }
+      a { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="topbar-name">二维 ADMM 稀疏 ISAR 成像</div>
+      <div class="topbar-links">
+        <a href="./isar_beginner_guide.html">入门图解</a>
+        <a href="./article_report.html">论文报告</a>
+        <a href="./10.1109jsen.2020.3006105.pdf" target="_blank" rel="noopener">论文原文</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="hero">
+    <div class="hero-inner">
+      <div class="eyebrow">从观测模型到每一步更新 / 不省略中间逻辑</div>
+      <h1>为什么要最小化这个目标函数，X、B、V、D 又分别是什么？</h1>
+      <p class="deck">
+        这份说明从雷达实际测到的回波开始，先说明为什么图像不能直接反算，再构造稀疏目标函数，
+        最后逐行推导 ADMM 更新以及作者如何消掉巨型矩阵求逆。
+      </p>
+      <div class="hero-question">
+        <div>
+          <strong>先回答“求什么”</strong>
+          <span>X̂ 是真实目标图像的估计，不是另一个观测量。</span>
+        </div>
+        <div>
+          <strong>再回答“为什么这样求”</strong>
+          <span>测量不足且含噪声，需要同时满足数据一致性和稀疏性。</span>
+        </div>
+        <div>
+          <strong>最后回答“怎样算”</strong>
+          <span>ADMM 用 X、B、V 分工，再利用傅里叶结构加速。</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <nav class="page-nav" aria-label="页面目录">
+    <div class="page-nav-inner">
+      <a href="#known">已知与未知</a>
+      <a href="#illposed">为何不能直接求</a>
+      <a href="#objective">目标函数</a>
+      <a href="#split">为什么引入 B、V</a>
+      <a href="#xupdate">x 更新从哪里来</a>
+      <a href="#simplify">D 与求逆化简</a>
+      <a href="#iteration">完整迭代</a>
+      <a href="#summary">逻辑总链</a>
+    </div>
+  </nav>
+
+  <main>
+    <section id="known">
+      <span class="section-no">01</span>
+      <h2>第一步：先分清已知量和未知量</h2>
+      <p class="lead">
+        雷达直接获得的是回波矩阵 S，而不是飞机图像。ISAR 成像的任务，是根据回波反推出目标在二维平面上的反射强度。
+      </p>
+
+      <div class="equation">
+        S = F<sub>a</sub> · X<sub>true</sub> · F<sub>r</sub><sup>T</sup> + Z
+        <span class="equation-note">正向模型：如果真实图像已知，它会怎样产生雷达观测</span>
+      </div>
+
+      <div class="symbol-grid">
+        <div class="symbol">
+          <div class="symbol-name">S</div>
+          <div class="symbol-role"><strong>已观测</strong><span>雷达实际测到的二维复数回波矩阵。</span></div>
+        </div>
+        <div class="symbol">
+          <div class="symbol-name">X<sub>true</sub></div>
+          <div class="symbol-role"><strong>真实但未知</strong><span>现实中存在的目标反射率图像。</span></div>
+        </div>
+        <div class="symbol">
+          <div class="symbol-name">F<sub>a</sub></div>
+          <div class="symbol-role"><strong>已知算子</strong><span>描述方位方向如何从图像变成回波。</span></div>
+        </div>
+        <div class="symbol">
+          <div class="symbol-name">F<sub>r</sub></div>
+          <div class="symbol-role"><strong>已知算子</strong><span>描述距离方向如何从图像变成回波。</span></div>
+        </div>
+        <div class="symbol">
+          <div class="symbol-name">Z</div>
+          <div class="symbol-role"><strong>噪声</strong><span>接收机噪声以及没有被模型解释的误差。</span></div>
+        </div>
+        <div class="symbol">
+          <div class="symbol-name">T</div>
+          <div class="symbol-role"><strong>运算符</strong><span>右上角 T 表示矩阵转置。</span></div>
+        </div>
+      </div>
+
+      <div class="callout">
+        <strong>成像就是一个反问题。</strong>
+        <p>已知 S、F<sub>a</sub>、F<sub>r</sub>，希望反过来估计不知道的 X<sub>true</sub>。</p>
+      </div>
+    </section>
+
+    <section id="illposed">
+      <span class="section-no">02</span>
+      <h2>第二步：为什么不能直接反算 X</h2>
+      <p>
+        如果没有噪声，而且两个傅里叶矩阵都是可逆方阵，理论上可以左右乘逆矩阵得到 X。
+        但论文为了获得超分辨率图像，故意让待恢复像素数多于实际测量数。
+      </p>
+
+      <div class="count-grid">
+        <div class="count-box">
+          <strong>Yak-42 回波测量数</strong>
+          <span class="count-value">16,384</span>
+          <span>S 的大小为 256 × 64</span>
+        </div>
+        <div class="count-box">
+          <strong>待恢复图像像素数</strong>
+          <span class="count-value">65,536</span>
+          <span>X 的大小为 512 × 128</span>
+        </div>
+      </div>
+
+      <p>
+        未知数比测量值多四倍，因此很多不同图像都可能产生相似的回波。再加上噪声 Z，严格要求
+        S = F<sub>a</sub>XF<sub>r</sub><sup>T</sup> 也不合理。
+      </p>
+
+      <div class="requirement-flow">
+        <div class="requirement">
+          <strong>测量给出的条件</strong>
+          <span>候选图像产生的回波应当接近真实回波。</span>
+        </div>
+        <div class="flow-arrow" aria-hidden="true">+</div>
+        <div class="requirement">
+          <strong>目标结构给出的条件</strong>
+          <span>飞机通常只在少量位置产生强散射，因此图像应当稀疏。</span>
+        </div>
+        <div class="flow-arrow" aria-hidden="true">→</div>
+        <div class="requirement">
+          <strong>可选择的解</strong>
+          <span>在许多能解释回波的图像中，选择更符合稀疏结构的一张。</span>
+        </div>
+      </div>
+
+      <div class="callout warning">
+        <strong>稀疏性不是算法凭空制造的信息。</strong>
+        <p>它是作者加入的先验假设：目标在选定像素网格上只有少数显著反射点。若真实场景并不稀疏，这个假设就可能损失细节。</p>
+      </div>
+    </section>
+
+    <section id="objective">
+      <span class="section-no">03</span>
+      <h2>第三步：两个要求怎样组成目标函数</h2>
+
+      <h3>要求一：候选图像要能解释回波</h3>
+      <p>先随便提出一张候选图像 X。它预测出的回波是：</p>
+
+      <div class="equation">
+        S<sub>predict</sub> = F<sub>a</sub> · X · F<sub>r</sub><sup>T</sup>
+        <span class="equation-note">X 在这里是优化过程正在尝试的候选图像</span>
+      </div>
+
+      <p>真实回波减去预测回波，得到残差矩阵：</p>
+
+      <div class="equation">
+        R = S − F<sub>a</sub> · X · F<sub>r</sub><sup>T</sup>
+        <span class="equation-note">R 越小，候选图像越能解释真实测量</span>
+      </div>
+
+      <p>
+        把残差矩阵中每个元素的幅度平方后相加，就得到一个总误差。Frobenius 范数的平方
+        ‖R‖<sub>F</sub><sup>2</sup> 正是这个含义：
+      </p>
+
+      <div class="equation">
+        数据代价 = ½ ‖S − F<sub>a</sub> · X · F<sub>r</sub><sup>T</sup>‖<sub>F</sub><sup>2</sup>
+        <span class="equation-note">前面的 ½ 方便求导，不改变最佳图像的位置</span>
+      </div>
+
+      <h3>要求二：候选图像要尽量稀疏</h3>
+      <p>
+        ‖X‖<sub>1</sub> 表示 X 中所有像素幅度之和。让它变小，会推动大量较小像素变成零：
+      </p>
+
+      <div class="equation">
+        稀疏代价 = λ ‖X‖<sub>1</sub> = λ · Σ<sub>i,j</sub> |X<sub>i,j</sub>|
+        <span class="equation-note">λ 控制稀疏要求在总目标中的分量</span>
+      </div>
+
+      <div class="table-scroll">
+        <table class="term-table">
+          <thead>
+            <tr><th>λ 的大小</th><th>更重视什么</th><th>可能结果</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>较小</td><td>拟合回波</td><td>保留更多弱细节，也可能保留更多噪声。</td></tr>
+            <tr><td>适中</td><td>在两者间平衡</td><td>保留主要散射结构并抑制背景。</td></tr>
+            <tr><td>较大</td><td>图像稀疏</td><td>背景更干净，但真实弱散射点也可能被删除。</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>把两个要求合在一起</h3>
+
+      <div class="equation">
+        X̂ = arg min<sub>X</sub> [ ½‖S − F<sub>a</sub> · X · F<sub>r</sub><sup>T</sup>‖<sub>F</sub><sup>2</sup> + λ‖X‖<sub>1</sub> ]
+        <span class="equation-note">在所有候选 X 中，寻找“回波误差 + 稀疏代价”最小的那一张</span>
+      </div>
+
+      <div class="table-scroll">
+        <table class="notation-table">
+          <thead>
+            <tr><th>符号</th><th>身份</th><th>准确含义</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>X<sub>true</sub></td><td>真实但未知</td><td>现实中存在、算法无法直接看到的目标图像。</td></tr>
+            <tr><td>X</td><td>候选变量</td><td>优化过程中被反复尝试和调整的图像。</td></tr>
+            <tr><td>X̂</td><td>估计结果</td><td>使目标函数最小的候选图像，用来估计 X<sub>true</sub>。</td></tr>
+            <tr><td>arg min</td><td>选择操作</td><td>返回“让后面表达式最小的 X”，不是返回最小代价值本身。</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout blue">
+        <strong>这就是为什么要求这个目标函数。</strong>
+        <p>测量不足使回波拟合条件不能唯一确定图像，所以再加入稀疏先验，从许多可能解中选择既符合回波、又更像稀疏 ISAR 场景的一张。</p>
+      </div>
+    </section>
+
+    <section id="split">
+      <span class="section-no">04</span>
+      <h2>第四步：为什么引入 B 和 V</h2>
+      <p>
+        数据误差是平滑的平方函数，而 ‖X‖<sub>1</sub> 含有绝对值，在零点不可微。
+        同一个 X 同时承担两种性质不同的任务，使直接求解不方便。
+      </p>
+
+      <div class="callout">
+        <strong>ADMM 的基本办法：复制一个变量，拆开两项。</strong>
+        <p>让 X 负责拟合回波，让辅助变量 B 负责稀疏化，再要求它们最终相等。</p>
+      </div>
+
+      <div class="equation multiline">
+        <span class="equation-line">最小化：½‖S − F<sub>a</sub> · X · F<sub>r</sub><sup>T</sup>‖<sub>F</sub><sup>2</sup> + λ‖B‖<sub>1</sub></span>
+        <span class="equation-line">约束：X = B</span>
+        <span class="equation-note">因为最终强制 X 与 B 相等，所以这和原目标函数等价</span>
+      </div>
+
+      <div class="variable-cards">
+        <div class="variable-card">
+          <span class="variable-letter">X</span>
+          <strong>主要变量</strong>
+          <span>负责数据一致性：生成的回波应接近真实 S。</span>
+        </div>
+        <div class="variable-card">
+          <span class="variable-letter">B</span>
+          <strong>辅助变量</strong>
+          <span>X 的计算副本，负责接受 L1 软阈值稀疏化。</span>
+        </div>
+        <div class="variable-card">
+          <span class="variable-letter">V</span>
+          <strong>缩放对偶变量</strong>
+          <span>累计 X 与 B 的分歧，推动两者逐轮一致。</span>
+        </div>
+        <div class="variable-card">
+          <span class="variable-letter">D</span>
+          <strong>临时简称</strong>
+          <span>D = B − V，只用于缩短 X 更新公式，没有独立物理意义。</span>
+        </div>
+      </div>
+
+      <p>V 的更新最能说明它的作用：</p>
+
+      <div class="equation">
+        V(k+1) = V(k) + X(k+1) − B(k+1)
+        <span class="equation-note">把本轮 X 与 B 的差异累加进去，下一轮继续纠正</span>
+      </div>
+
+      <p>
+        k 表示当前迭代编号。若某个位置上 X 长期大于 B，对应的 V 会不断积累差异，并在后续更新中影响两者。
+        因此 V 可以直观地理解为“不一致的记忆器”。
+      </p>
+    </section>
+
+    <section id="xupdate">
+      <span class="section-no">05</span>
+      <h2>第五步：x(k+1) 的求逆公式从哪里来</h2>
+
+      <h3>先解释为什么突然出现小写字母</h3>
+      <p>为了推导，论文暂时把每个二维矩阵逐列堆成一个长向量：</p>
+
+      <div class="equation multiline">
+        <span class="equation-line">x = vec(X)，b = vec(B)，v = vec(V)，s = vec(S)</span>
+        <span class="equation-line">Φ = F<sub>r</sub> ⊗ F<sub>a</sub></span>
+        <span class="equation-note">⊗ 表示 Kronecker 积；大小写只是矩阵形式与向量形式的区别</span>
+      </div>
+
+      <p>二维与一维形式完全等价，因为：</p>
+
+      <div class="equation">
+        vec(F<sub>a</sub> · X · F<sub>r</sub><sup>T</sup>) = (F<sub>r</sub> ⊗ F<sub>a</sub>) · vec(X)
+        <span class="equation-note">因此二维观测模型可写成 s = Φx + z，没有丢失或新增信息</span>
+      </div>
+
+      <h3>在第 k 轮，只更新 x</h3>
+      <p>
+        此时 b(k) 和 v(k) 暂时固定，只寻找新的 x。ADMM 给出的 x 子问题是：
+      </p>
+
+      <div class="equation">
+        x(k+1) = arg min<sub>x</sub> [ ½‖s − Φx‖<sub>2</sub><sup>2</sup> + δ/2 · ‖x − b(k) + v(k)‖<sub>2</sub><sup>2</sup> ]
+        <span class="equation-note">第一项要求符合回波，第二项要求 x 靠近当前辅助结果；δ 控制 ADMM 内部靠拢力度</span>
+      </div>
+
+      <div class="callout warning">
+        <strong>不要混淆 λ 和 δ。</strong>
+        <p>λ 决定最终目标里稀疏性有多重要；δ 是 ADMM 的惩罚参数，主要影响 X 和 B 在迭代中怎样靠拢及收敛速度。</p>
+      </div>
+
+      <h3>逐行求出这个子问题的答案</h3>
+      <div class="derivation">
+        <div class="derive-step">
+          <strong>1. 对第一项求导</strong>
+          <p>回波平方误差关于 x 的导数是：</p>
+          <div class="mini-equation">Φ<sup>H</sup>(Φx − s)</div>
+        </div>
+        <div class="derive-step">
+          <strong>2. 对第二项求导</strong>
+          <p>一致性平方项关于 x 的导数是：</p>
+          <div class="mini-equation">δ[x − b(k) + v(k)]</div>
+        </div>
+        <div class="derive-step">
+          <strong>3. 最小点的总导数等于零</strong>
+          <div class="mini-equation">Φ<sup>H</sup>(Φx − s) + δ[x − b(k) + v(k)] = 0</div>
+        </div>
+        <div class="derive-step">
+          <strong>4. 展开并把含 x 的项放在左侧</strong>
+          <div class="mini-equation">(Φ<sup>H</sup>Φ + δI)x = Φ<sup>H</sup>s + δ[b(k) − v(k)]</div>
+        </div>
+        <div class="derive-step">
+          <strong>5. 解这个线性方程</strong>
+          <div class="mini-equation">x(k+1) = (Φ<sup>H</sup>Φ + δI)<sup>−1</sup> · [Φ<sup>H</sup>s + δ(b(k) − v(k))]</div>
+        </div>
+      </div>
+
+      <div class="table-scroll">
+        <table class="notation-table">
+          <thead>
+            <tr><th>符号</th><th>含义</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>H</td><td>共轭转置。Φ<sup>H</sup> 可以把测量空间中的量反投影到图像空间。</td></tr>
+            <tr><td>I</td><td>单位矩阵。</td></tr>
+            <tr><td>−1</td><td>矩阵逆，用来解上面的线性方程。</td></tr>
+            <tr><td>x(k+1)</td><td>第 k+1 轮新得到的数据一致性图像向量。</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout blue">
+        <strong>这个求逆公式不是新的总目标。</strong>
+        <p>它只是第 k 轮中，在 b(k)、v(k) 已知时，x 子问题的解析答案。</p>
+      </div>
+    </section>
+
+    <section id="simplify">
+      <span class="section-no">06</span>
+      <h2>第六步：D 是什么，为什么能消掉大矩阵求逆</h2>
+
+      <h3>D 只是反复出现部分的简称</h3>
+      <p>因为 b(k) − v(k) 总是一起出现，先定义：</p>
+
+      <div class="equation">
+        d(k) = b(k) − v(k)
+        <span class="equation-note">恢复成二维矩阵后就是 D(k) = B(k) − V(k)</span>
+      </div>
+
+      <p>
+        D 可以理解为“上一轮稀疏结果 B 扣除累计分歧 V 后，本轮 X 更新使用的参考图像”。
+        但它只是临时计算量，不是第五种物理对象。
+      </p>
+
+      <h3>真正困难的是巨型矩阵逆</h3>
+      <p>
+        Φ = F<sub>r</sub> ⊗ F<sub>a</sub> 非常大。Yak-42 设置下，仅显式保存 Φ 就约需 16 GiB，
+        更不用说计算 (Φ<sup>H</sup>Φ + δI)<sup>−1</sup>。
+      </p>
+
+      <div class="memory-compare">
+        <div class="memory-side">
+          <strong>显式 Kronecker 字典 Φ</strong>
+          <span class="memory-value">约 16 GiB</span>
+          <span>16,384 × 65,536 个复双精度元素</span>
+        </div>
+        <div class="memory-side">
+          <strong>分别保存 F<sub>a</sub> 与 F<sub>r</sub></strong>
+          <span class="memory-value">约 2.13 MiB</span>
+          <span>保留二维可分离结构</span>
+        </div>
+      </div>
+
+      <h3>能够化简的关键条件</h3>
+      <p>归一化部分傅里叶矩阵的行互相正交：</p>
+
+      <div class="equation multiline">
+        <span class="equation-line">F<sub>a</sub>F<sub>a</sub><sup>H</sup> = I</span>
+        <span class="equation-line">F<sub>r</sub>F<sub>r</sub><sup>H</sup> = I</span>
+        <span class="equation-line">所以 ΦΦ<sup>H</sup> = I</span>
+        <span class="equation-note">这是后续 Woodbury 化简成立的前提，不适用于任意观测矩阵</span>
+      </div>
+
+      <p>利用这个正交性质和 Woodbury 矩阵恒等式，原求逆形式可严格改写成：</p>
+
+      <div class="equation">
+        x(k+1) = d(k) − 1/(1+δ) · Φ<sup>H</sup>[Φd(k) − s]
+        <span class="equation-note">这是等价变换，不是近似迭代</span>
+      </div>
+
+      <ol class="logic-chain">
+        <li>
+          <div><strong>用参考图像预测回波</strong><p>Φd(k) 是 d(k) 按观测模型生成的预测测量。</p></div>
+        </li>
+        <li>
+          <div><strong>计算测量残差</strong><p>Φd(k) − s 表示预测回波与真实回波的差异。</p></div>
+        </li>
+        <li>
+          <div><strong>把残差反投影到图像空间</strong><p>Φ<sup>H</sup>[Φd(k) − s] 告诉算法图像应向哪个方向修正。</p></div>
+        </li>
+        <li>
+          <div><strong>修正当前参考图像</strong><p>从 d(k) 中减去按 1/(1+δ) 缩放后的反投影残差。</p></div>
+        </li>
+      </ol>
+
+      <h3>最后恢复成二维矩阵形式</h3>
+
+      <div class="equation multiline">
+        <span class="equation-line">D(k) = B(k) − V(k)</span>
+        <span class="equation-line">X(k+1) = D(k) − 1/(1+δ) · F<sub>a</sub><sup>H</sup></span>
+        <span class="equation-line">· [F<sub>a</sub> · D(k) · F<sub>r</sub><sup>T</sup> − S] · F<sub>r</sub><sup>*</sup></span>
+        <span class="equation-note">右上角 * 表示逐元素复共轭；方括号内是二维回波残差</span>
+      </div>
+
+      <div class="callout">
+        <strong>作者在这里真正替换了什么？</strong>
+        <p>把“显式构造 Φ 并做大矩阵求逆”，换成“保留二维结构，预测回波、计算残差、再把残差反投影”。规则傅里叶结构下还可继续把矩阵乘法换成 FFT/IFFT。</p>
+      </div>
+    </section>
+
+    <section id="iteration">
+      <span class="section-no">07</span>
+      <h2>第七步：得到 X 后，B 和 V 怎样更新</h2>
+      <p>
+        X(k+1) 主要负责解释测量，还不一定足够稀疏。因此下一步把 X(k+1) + V(k) 交给软阈值：
+      </p>
+
+      <div class="equation">
+        B(k+1) = soft[X(k+1) + V(k), λ/δ]
+        <span class="equation-note">B 是经过稀疏处理的辅助图像</span>
+      </div>
+
+      <div class="table-scroll">
+        <table class="term-table">
+          <thead>
+            <tr><th>单个复数像素 z</th><th>软阈值结果</th><th>作用</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>|z| ≤ λ/δ</td><td>变成 0</td><td>删除幅度较小、不够可信的像素。</td></tr>
+            <tr><td>|z| &gt; λ/δ</td><td>保留相位，幅度减小 λ/δ</td><td>保留较强散射点，同时施加稀疏收缩。</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>接着累计本轮 X 与 B 的分歧：</p>
+
+      <div class="equation">
+        V(k+1) = V(k) + X(k+1) − B(k+1)
+        <span class="equation-note">V 把尚未满足 X = B 的部分带入下一轮</span>
+      </div>
+
+      <h3>一轮 ADMM 的完整执行顺序</h3>
+      <div class="iteration-map">
+        <div class="iteration-row">
+          <div class="iteration-cell iteration-index">01</div>
+          <div class="iteration-cell"><strong>组合参考图像</strong><span>D(k) = B(k) − V(k)</span></div>
+          <div class="iteration-cell"><span>把稀疏结果和累计修正合成 X 更新的起点。</span></div>
+        </div>
+        <div class="iteration-row">
+          <div class="iteration-cell iteration-index">02</div>
+          <div class="iteration-cell"><strong>更新 X</strong><span>预测回波并反投影残差</span></div>
+          <div class="iteration-cell"><span>让图像更符合真实测量 S。</span></div>
+        </div>
+        <div class="iteration-row">
+          <div class="iteration-cell iteration-index">03</div>
+          <div class="iteration-cell"><strong>更新 B</strong><span>执行复数软阈值</span></div>
+          <div class="iteration-cell"><span>把大量小像素压成零，使图像稀疏。</span></div>
+        </div>
+        <div class="iteration-row">
+          <div class="iteration-cell iteration-index">04</div>
+          <div class="iteration-cell"><strong>更新 V</strong><span>累加 X − B</span></div>
+          <div class="iteration-cell"><span>推动数据解和稀疏解逐渐一致。</span></div>
+        </div>
+        <div class="iteration-row">
+          <div class="iteration-cell iteration-index">05</div>
+          <div class="iteration-cell"><strong>检查停止</strong><span>比较相邻两轮 X</span></div>
+          <div class="iteration-cell"><span>变化足够小或达到最大迭代次数时停止。</span></div>
+        </div>
+      </div>
+
+      <p>
+        理想收敛时，X 与 B 接近相等：X 既能解释雷达回波，也已经是稀疏图像。最终返回的 X 就是估计结果 X̂。
+      </p>
+    </section>
+
+    <section id="summary">
+      <span class="section-no">08</span>
+      <h2>最后把整条逻辑连起来</h2>
+
+      <ol class="logic-chain">
+        <li><div><strong>真实图像未知</strong><p>现实中存在 X<sub>true</sub>，但雷达只能测到回波 S。</p></div></li>
+        <li><div><strong>反问题不唯一</strong><p>待恢复像素多于测量值，而且回波含噪声，不能直接求逆。</p></div></li>
+        <li><div><strong>加入稀疏先验</strong><p>飞机只有少量强散射位置，从许多可能解中偏好稀疏图像。</p></div></li>
+        <li><div><strong>构造总目标</strong><p>同时最小化回波拟合误差和 L1 稀疏代价，最优候选图像记作 X̂。</p></div></li>
+        <li><div><strong>拆分两个不同性质的项</strong><p>X 负责数据拟合，辅助副本 B 负责稀疏，并要求 X = B。</p></div></li>
+        <li><div><strong>用 V 协调一致性</strong><p>V 累计 X 与 B 的差异，使它们在迭代中逐渐相等。</p></div></li>
+        <li><div><strong>推导 X 子问题</strong><p>固定 b、v 后对平方目标求导，得到包含大矩阵逆的解析答案。</p></div></li>
+        <li><div><strong>利用傅里叶行正交</strong><p>结合 Woodbury 恒等式，把大矩阵求逆换成残差反投影。</p></div></li>
+        <li><div><strong>恢复二维并用 FFT 加速</strong><p>避免 Kronecker 大字典，分别处理距离和方位两个方向。</p></div></li>
+        <li><div><strong>迭代得到 X̂</strong><p>交替执行数据修正、软阈值和分歧累计，直到停止。</p></div></li>
+      </ol>
+
+      <div class="final-chain">
+        <h3>一句话总结</h3>
+        <p>
+          X̂ 是算法对真实 ISAR 图像的估计；目标函数之所以同时包含回波误差和 L1 范数，是因为有限含噪测量不能唯一确定图像，必须利用散射点稀疏这一先验；
+          ADMM 再用 X、B、V 分别承担数据拟合、稀疏化和一致性协调，D 只是 B − V 的临时简称，最后利用傅里叶正交性把昂贵的大矩阵求逆变成二维残差反投影。
+        </p>
+      </div>
+
+      <div class="footer-links">
+        <a href="./isar_beginner_guide.html">回到零基础 ISAR 图解</a>
+        <a href="./article_report.html">阅读完整论文技术报告</a>
+        <a href="./admm_2d.py">查看 Python 实现</a>
+        <a href="./yak42_admm_fast.png">查看 Yak-42 重建结果</a>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

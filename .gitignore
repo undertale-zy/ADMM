@@ -1,0 +1,12 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local training caches and temporary experiment outputs.
+outputs/*/checkpoints/
+outputs/*/cache/
+*.tmp
+*.temp

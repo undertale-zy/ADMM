@@ -1,0 +1,6 @@
+numpy==2.5.1
+scipy==1.18.0
+matplotlib==3.11.1
+pytest==9.1.1
+# Use the CUDA-compatible build supplied by the server when training on GPU.
+torch==2.13.0
