@@ -1,6 +1,6 @@
 # 2D_ADMM Project Memory
 
-Last updated: 2026-08-23
+Last updated: 2026-08-27
 
 This file is the handoff memory for future conversations working on
 `/Users/undertale/Work/EMW_py/2D_ADMM`. Read it before making changes so the
@@ -220,8 +220,9 @@ Result at that time:
   thresholding, zero measurement stability, corrected stop behavior, invalid
   dimension checks, and Yak-42 preprocessing dimensions.
 
-After adding the unfolding network and its training smoke test, the current
-full suite is `16 passed` (2026-08-23).
+After adding the first unfolding network and its training smoke test, that
+checkpoint of the suite was `16 passed` (2026-08-23). Section 12 records the
+newer R1--R36 suite.
 
 ## 7. ADMM 展开网络实现状态（2026-08-23）
 
@@ -431,3 +432,75 @@ Planning document:
 - `recent_progress_and_weekly_plan_2026.md`
 - It contains a Chinese progress summary and 21 rolling seven-day work periods
   from 2026-08-07 through 2026-12-31 inclusive.
+
+## 12. R1--R36 完整复刻状态（2026-08-27，覆盖旧的待办描述）
+
+用户从服务器提供了两份内容相同的复刻规范：
+
+- `ADMM 神经替代网络完整复刻规范.txt`
+- `network.doc`
+
+去除 Word 控制字符和排版空白后，两者正文 SHA-256 都是
+`4a31167ab85d62e451a7176d6b4c9ec22b6b0bedb3cf88c02102b04e6db53ac6`。
+实现时以 UTF-8 `.txt` 为事实来源；`network.md` 目前是用户留下的空文件，
+不要删除或伪造其内容。
+
+已经实现完整的架构级复刻：
+
+- `reference_schedules.py`：Stage-1、Deep Scalar、Balanced Scalar schedule；
+- `admm_support_fusion.py`、`admm_guide_support_fusion.py`、
+  `admm_deep_scalar.py`：历史模型族；
+- `admm_rounds32_36.py`：R32--R36；
+- `structured_isar_dataset.py`、`dense_aircraft_isar_dataset.py`：两个混合域；
+- `admm_losses.py`：observed echo、noise-aware、background、support loss；
+- `round_registry.py`：不可变 R1--R36 配置与统一构建接口；
+- `train_round.py`：CPU/CUDA、torchrun DDP、三类历史产物 schema；
+- `evaluation.py` 和三个 `evaluate_*.py`：固定 synthetic/Yak 评测；
+- `generate_all_complete_training_visualizations.py`：R1--R31 图；
+- `tests/test_admm_replication.py`：全体系回归测试。
+
+必须保留的历史行为：
+
+- R2/R3、R12--15 historical validation echo weight 为 0.1；
+- R16--19 即使命令传 CNN 仍是纯 scalar；
+- R20--23 constrained selector 实际约束 clean echo；
+- R24--31 的旧 shell 概率来自 `STRUCTURED_PROB`，统一 registry 改为显式配置，
+  但数据行为不变；
+- R28--36 的 `structured_probability` 实际表示 dense probability；
+- R34 连续 mask residual leakage；
+- R35 保留父类两个未使用 DC 参数，总参数量 19,720；
+- R36 与 R33 网络相同，没有独立 distillation head；
+- R32--36 historical 双栏图的 Fast baseline 使用循环末尾 measurement；
+  `corrected` 才用公平 seed 0 并写 protocol metadata。
+
+Stage-1 guide 的解析顺序：显式 `--guide-checkpoint`，然后环境变量
+`GUIDE_CHECKPOINT`，然后相对历史路径，最后使用规范中嵌入的完整 learned
+scalar schedule。正式服务器复现应显式传 R1 的 `checkpoint-last.pt`；嵌入值用于
+无 checkpoint 的架构恢复和本机测试。
+
+2026-08-27 本机验收：
+
+- `python -m compileall -q .` 通过；
+- `pytest tests -q` 为 `52 passed`；
+- R1/R2/R3/R4/R8/R12/R16/R20/R24/R28/R32--R36 均完成 forward、loss、
+  backward 和 1-epoch CPU trainer smoke；
+- R32 全尺寸 512x128 工程 smoke 完成 point/dense/Yak seed 0/1、JSON 和 PNG；
+- Yak Fast-ADMM seed-0 锚点：entropy `4.276909883`，observed residual
+  `0.187503880`，band pixel fraction `0.0006256103515625`，40 iterations。
+
+这些本机 smoke 没有完成正式训练，不能把其 NMSE、熵或延迟当作服务器结果。
+服务器规范中的 R32 参考值（point image `0.006898`、dense image `0.171632`、
+Yak band `0.8200%`、support `1.5981%`）只是历史验收锚点，当前本机没有相应
+checkpoint，未声称重新复现。
+
+服务器新对话应依次阅读：
+
+1. 本文件；
+2. `ADMM 神经替代网络完整复刻规范.txt`；
+3. `ADMM_NETWORK_REPLICATION.md`；
+4. `SERVER_RUNBOOK.md`；
+5. `readpaper.md`（需要讲论文时）。
+
+先运行 52 项测试和 R32 `--smoke`，再按 runbook 训练 R1 teacher，之后才启动
+依赖 guide 的轮次。默认使用 `historical` 复刻旧实验；新对比实验另建目录并显式
+使用 `corrected`。

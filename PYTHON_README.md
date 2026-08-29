@@ -101,6 +101,51 @@ and mean image entropy was `4.349631`; the unfolded network's normalized test
 image loss was `0.063644`. These objectives are useful diagnostics but are not
 directly interchangeable with the paper's Yak-42 entropy result.
 
+## R1--R36 统一复刻入口
+
+服务器实验规范中的 36 个完整训练任务已经统一到以下入口：
+
+```text
+round_registry.py       不可变的 R1--R36 配置表
+train_round.py          CPU、CUDA 和 torchrun/DDP 训练入口
+evaluate_rounds32_36.py R32--R36 固定域与 Yak-42 评测
+generate_all_complete_training_visualizations.py
+                        R1--R31 单图、8 张 group 图和 31-panel 总览
+```
+
+本机快速检查一个 Round：
+
+```bash
+/Users/undertale/miniforge3/envs/usual/bin/python train_round.py \
+  --round 32 \
+  --smoke \
+  --device cpu \
+  --output-dir /tmp/admm-r32-smoke
+```
+
+服务器正式训练示例：
+
+```bash
+export REPO_ROOT=/path/to/workspace/ADMM
+export RUN_ROOT=/path/to/workspace/runs
+export GUIDE_CHECKPOINT="$RUN_ROOT/admm_stage1_full_8gpu/checkpoint-last.pt"
+cd "$REPO_ROOT"
+
+torchrun --standalone --nproc-per-node=4 train_round.py \
+  --round 32 \
+  --device cuda \
+  --guide-checkpoint "$GUIDE_CHECKPOINT" \
+  --output-dir "$RUN_ROOT/admm_round32_guide_dc"
+```
+
+默认 `--compatibility historical` 保留已经完成实验的 selector、validation
+weight 和 R32 双栏图 seed 行为。`--compatibility corrected` 用于新实验，会修正
+这些协议并在 JSON 中写入 protocol metadata；不要用 corrected 产物覆盖历史结果。
+
+完整的服务器执行顺序、每组 GPU 数和正式评测命令见
+`SERVER_RUNBOOK.md`。架构、历史行为与本机验收结果见
+`ADMM_NETWORK_REPLICATION.md`。
+
 ## Intentional MATLAB Fixes
 
 The MATLAB functions combine a hard-coded `cgtol=1e-4` loop condition with a

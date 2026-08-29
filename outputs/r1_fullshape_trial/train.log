@@ -1,0 +1,5 @@
+round 01 epoch 001 | train 0.790111 | validation 0.620506
+round 01 epoch 002 | train 0.780529 | validation 0.615645
+round 01 epoch 003 | train 0.771182 | validation 0.610566
+round 01 epoch 004 | train 0.760801 | validation 0.605583
+round 01 epoch 005 | train 0.750707 | validation 0.600468

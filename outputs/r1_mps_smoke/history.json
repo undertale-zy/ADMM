@@ -1,0 +1,42 @@
+[
+  {
+    "epoch": 1,
+    "train": {
+      "image": 1.169615551829338,
+      "echo": 0.0033232782734557986,
+      "observed_residual": 0.0033232782734557986,
+      "sparse": 0.0925219627097249,
+      "background": 0.0,
+      "total": 1.169957123696804
+    },
+    "validation": {
+      "image": 0.7757171392440796,
+      "echo": 0.00630448863375932,
+      "observed_residual": 0.00630448863375932,
+      "sparse": 0.05158380093052983,
+      "background": 0.0,
+      "total": 0.7763527482748032
+    },
+    "elapsed_seconds": 1.3436784171499312
+  },
+  {
+    "test": {
+      "image": 1.2006532698869705,
+      "echo": 0.009907224855851382,
+      "observed_residual": 0.009907224855851382,
+      "sparse": 0.050477975280955434,
+      "background": 0.0,
+      "total": 1.2016490399837494
+    },
+    "fixed_fast_admm": {
+      "image_nmse": 1.1713253956873593,
+      "image_entropy": 4.003976591023356,
+      "iterations": 40.0
+    },
+    "benchmark": {
+      "latency_ms": 5.182962503749877,
+      "warmup": 3.0,
+      "repeats": 20.0
+    }
+  }
+]

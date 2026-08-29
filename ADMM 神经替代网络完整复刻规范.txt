@@ -1,0 +1,3045 @@
+ADMM 神经替代网络完整复刻规范
+
+本文档是当前 ADMM 神经替代项目的网络结构、物理 forward、训练、数据集、评测和迭代历史复刻规范。
+
+目标是：即使另一个对话无法访问当前代码，也可以根据本文档重新实现行为等价的网络。
+
+本文档不包含模型 checkpoint，因此可以复刻网络结构、forward、loss、训练流程和实验策略，但不能保证在没有 checkpoint 的情况下得到逐参数相同的结果。
+
+0. 版本和复刻边界
+
+当前项目 Git 历史的两个关键版本：
+
+1初始神经展开基线：2ec77a0
+2当前迭代版本： 6b8c629
+
+2ec77a0 代表最初的 Stage 1、Stage 2、Stage 3 网络；6b8c629 代表加入 support fusion、Stage-1 guide、structured/dense 数据集和 Round 32–36 后的版本。
+
+本文档中的“一模一样”分为三层：
+
+结构级一致
+
+在没有原代码的情况下，应当可以重建：
+
+类和模块层级；
+
+输入输出张量形状；
+
+FFT forward/adjoint；
+
+ADMM 每层更新；
+
+CNN/Transformer 结构；
+
+support mask 和物理 data consistency；
+
+数据生成规则；
+
+loss、optimizer、训练参数和 checkpoint 选择。
+
+权重级一致
+
+若没有原始 checkpoint，无法保证 raw_c/raw_tau/raw_beta、CNN 权重或 Transformer 权重逐参数一致。
+
+输出级一致
+
+若没有同时提供 checkpoint、数据、随机种子、PyTorch/CUDA 版本和 FFT 数值环境，不能保证逐像素输出完全一致。
+
+因此本文档的目标是：
+
+让另一个对话重新写出与当前版本结构、forward、训练行为和评测逻辑一致的网络。
+
+1. 任务和物理模型
+
+1.1 ISAR 图像和测量
+
+目标图像是二维复数反射率矩阵：
+
+1X ∈ C^(P×Q)
+
+观测 echo 是二维复数测量矩阵：
+
+1S ∈ C^(M×N)
+
+默认尺寸：
+
+1image_shape = (512, 128)
+2measurement_shape = (256, 64)
+
+默认输入到 PyTorch 网络时，不直接使用 complex tensor，而使用两个实数通道：
+
+1measurements.shape = [B, 2, 256, 64]
+2target.shape = [B, 2, 512, 128]
+
+通道含义：
+
+1channel 0 = real part
+2channel 1 = imaginary part
+
+1.2 复数转换
+
+从两个实通道转为复数：
+
+1z = real + 1j * imag
+
+数学形式：
+
+1complex_from_channels([real, imag]) = real + i·imag
+
+复数转回两个通道：
+
+1complex_to_channels(z) = [real(z), imag(z)]
+
+FFT 和复数 soft-threshold 使用 complex64/complex128；CNN 和 Transformer 在 real/imag 两通道上工作。
+
+1.3 Forward operator
+
+当前使用归一化的部分二维 Fourier forward operator，记为 A(X)。
+
+对图像 X 执行：
+
+11. 在 range 维做 ifft，长度 P=512，并乘 sqrt(P)；
+22. 保留 range 维前 M=256 个 bin；
+33. 在 azimuth/Doppler 维做 fft，长度 Q=128，并除 sqrt(Q)；
+44. 保留 Doppler 维前 N=64 个 bin。
+
+伪代码：
+
+1range_domain = ifft(X, n=P, dim=-2) * sqrt(P)
+2range_domain = range_domain[..., :M, :]
+3echo = fft(range_domain, n=Q, dim=-1) / sqrt(Q)
+4echo = echo[..., :, :N]
+
+因此：
+
+1A: C^(512×128) → C^(256×64)
+
+1.4 Adjoint operator
+
+记 Aᴴ 为 forward operator 的伴随操作。
+
+伪代码：
+
+1image = fft(S, n=P, dim=-2) / sqrt(P)
+2image = ifft(image, n=Q, dim=-1) * sqrt(Q)
+
+其中 S 的空间形状是 (M,N)，输出形状是 (P,Q)。
+
+1.5 复数 soft-threshold
+
+对每个复数像素 z，阈值为非负实数 τ：
+
+1soft(z, τ) = z · max(|z|-τ, 0) / (|z|+ε)
+
+其中：
+
+1ε = 1e-12
+
+这个定义保持复数相位，只压缩幅度。
+
+2. 最基础网络：Stage 1 Scalar-8
+
+Stage 1 是整个项目最重要的基础网络。
+
+它不是普通 image-to-image CNN，而是将传统 ADMM 的 8 次迭代展开成 8 层，每层只学习 3 个 scalar。
+
+2.1 状态变量
+
+每一层维护：
+
+1X_k：当前图像/data-consistency 状态
+2Z_k：稀疏辅助变量
+3U_k：scaled dual variable
+
+初始状态：
+
+1observed = complex_from_channels(measurements)
+2image = Aᴴ(observed)
+3sparse_image = zeros_like(image)
+4scaled_dual = zeros_like(image)
+
+2.2 每层 ADMM 更新
+
+对第 k 层：
+
+1D_k = Z_k - U_k
+2R_k = A(D_k) - S
+3
+4X_(k+1) = D_k - c_k · Aᴴ(R_k)
+5
+6Z_(k+1) = soft(X_(k+1) + U_k, τ_k)
+7
+8U_(k+1) = U_k + β_k · (X_(k+1) - Z_(k+1))
+
+伪代码：
+
+1for k in range(8):
+2 difference = sparse_image - scaled_dual
+3 residual = A(difference) - observed
+4
+5 next_image = difference - c[k] * A_adjoint(residual)
+6 next_sparse = complex_soft_threshold(next_image + scaled_dual, tau[k])
+7
+8 next_dual = scaled_dual + beta[k] * (next_image - next_sparse)
+9
+10 image = next_image
+11 sparse_image = next_sparse
+12 scaled_dual = next_dual
+
+网络最终返回：
+
+1complex_to_channels(image)
+
+当前实现返回 X 状态，而不是再次硬阈值后的 Z。
+
+2.3 可学习参数
+
+每层 3 个正参数：
+
+1c_k
+2τ_k
+3β_k
+
+共：
+
+18 × 3 = 24 个核心 scalar
+
+为了保证参数为正，实际保存 raw 参数：
+
+1c[k] = softplus(raw_c[k])
+2tau[k] = softplus(raw_tau[k])
+3beta[k] = softplus(raw_beta[k])
+
+初始化：
+
+1c_k = 0.5
+2τ_k = 0.0065
+3β_k = 1.0
+
+若需要反向初始化 raw，使用 inverse softplus：
+
+1inverse_softplus(v) = v + log(1 - exp(-v))
+
+2.4 Stage 1 参数和训练
+
+默认配置：
+
+1image_shape = (512,128)
+2measurement_shape = (256,64)
+3num_layers = 8
+4proximal = none
+5train_samples = 20000
+6validation_samples= 1000
+7test_samples = 1000
+8batch_size = 2
+9epochs = 100
+10learning_rate = 1e-3
+
+Stage 1 的核心训练 loss：
+
+1image NMSE
+2+ 0.1 × observed echo NMSE
+3+ 0.0001 × sparsity penalty
+
+其中 sparsity penalty 不是对 ADMM 的 Z 状态，也不是逐样本归一化 L1；它直接作用于网络最终返回的复数图像 X_pred：
+
+1predicted_image = complex_from_channels(prediction) # [B,P,Q]
+2L_sparse = torch.mean(torch.abs(predicted_image))
+
+torch.mean 同时平均 batch、range 和 azimuth 三个维度。完整基础 loss 为：
+
+1image_per_sample = (
+2 sum_hw(abs(X_pred-X_true)**2)
+3 / clamp_min(sum_hw(abs(X_true)**2), 1e-8)
+4)
+5L_image = mean_batch(image_per_sample)
+6
+7echo_pred = A(X_pred)
+8echo_per_sample = (
+9 sum_hw(abs(echo_pred-S_observed)**2)
+10 / clamp_min(sum_hw(abs(S_observed)**2), 1e-8)
+11)
+12L_echo_observed = mean_batch(echo_per_sample)
+13
+14L_total = L_image + echo_weight*L_echo_observed + sparse_weight*L_sparse
+
+Round 1 使用 echo_weight=0.1；Round 2/3 和 Round 12–15 的训练 batch 使用 echo_weight=0.5。sparse_weight 均为 1e-4。
+
+Stage 1 训练完成后保存：
+
+1checkpoint-last.pt
+2history.json
+3metrics.json
+4learned_parameters.csv
+
+2.5 Stage 1 结果定位
+
+当前已验证的 Stage 1 结果：
+
+1Image NMSE ≈ 0.003895
+2Clean echo NMSE ≈ 0.00875
+3Yak -40~-60 band ≈ 3.18%
+4Yak >-60 support ≈ 3.29%
+5H20 latency ≈ 1.75 ms
+
+Stage 1 的特点：
+
+参数量极小；
+
+物理约束强；
+
+不直接学习飞机纹理；
+
+不容易记住 synthetic generator；
+
+Yak-42 机体结构保留最好；
+
+没有 Stage 2/3 的全图低幅底噪。
+
+缺点：
+
+所有空间位置共用 scalar schedule；
+
+没有空间自适应阈值；
+
+仍保留一部分 -40~-60 dB 弱响应；
+
+不能显式区分机体弱散射和背景。
+
+3. Stage 2：CNN proximal
+
+Stage 2 在每层 soft-threshold 后加入 CNN proximal。
+
+3.1 ADMM 主体
+
+ADMM 主体仍然是 8 层，更新与 Stage 1 相同：
+
+1D = Z - U
+2R = A(D) - S
+3X_next = D - c_k Aᴴ(R)
+4Z_temp = soft(X_next + U, τ_k)
+5Z_next = CNNProx(Z_temp)
+6U_next = U + β_k(X_next - Z_next)
+
+3.2 CNN 结构
+
+默认参数：
+
+1channels = 32
+2depth = 3
+
+结构：
+
+1Conv2d(2, 32, kernel_size=3, padding=1)
+2GELU
+3Conv2d(32, 32, kernel_size=3, padding=1)
+4GELU
+5Conv2d(32, 32, kernel_size=3, padding=1)
+6GELU
+7Conv2d(32, 2, kernel_size=3, padding=1)
+
+复数 proximal 过程：
+
+1channels = complex_to_channels(values)
+2correction_channels = cnn(channels)
+3correction = complex_from_channels(correction_channels)
+4output = values + tanh(scale) * correction
+
+其中：
+
+1scale 是可学习 scalar
+2scale 初始化为 0.1
+
+默认在 8 层之间共享同一个 proximal 模块：
+
+1share_proximal = True
+
+初始化必须保持 PyTorch 构造时行为：所有 Conv2d 的 weight/bias 使用当前 PyTorch 的默认 reset_parameters()，没有额外手工初始化；唯一显式初始化的是 residual scale=0.1。训练入口先执行 torch.manual_seed(seed)，再构造模型。若要尽量复现训练轨迹，应使用相同 PyTorch 版本，不能把 CNN 改成自定义 Xavier/zero initialization。
+
+3.3 失败机制
+
+普通 CNN proximal 的问题：
+
+CNN 的输出不是严格零保持；
+
+对弱输入也可能输出非零 correction；
+
+8 层反复累积后，低幅响应铺满全图；
+
+observed residual 可能更低，但 clean echo 变差；
+
+Yak-42 背景出现大量 -40~-60 dB 响应。
+
+已验证 Yak 结果大约为：
+
+1Yak -40~-60 band ≈ 67%
+2Yak >-60 support ≈ 68%
+
+因此 Stage 2 不能作为当前主模型。
+
+4. Stage 3：Transformer proximal
+
+Stage 3 用 Patch Transformer 替换 CNN proximal，ADMM 主体不变。
+
+4.1 Transformer 参数
+
+1patch = 8
+2embed_dim = 96
+3depth = 2
+4heads = 4
+5feedforward_dim = 384
+6dropout = 0
+7activation = GELU
+8batch_first = True
+9norm_first = True
+
+输入图像尺寸为 (512,128)，patch=8 后：
+
+1512 / 8 = 64
+2128 / 8 = 16
+3token_count = 64 × 16 = 1024
+
+4.2 结构
+
+1[2,512,128]
+2→ Conv2d(2,96,kernel=8,stride=8)
+3→ [96,64,16]
+4→ flatten + transpose
+5→ [1024,96]
+6→ 加 learnable positional embedding [1,1024,96]
+7→ 2 层 TransformerEncoder
+8→ reshape 为 [96,64,16]
+9→ ConvTranspose2d(96,2,kernel=8,stride=8)
+10→ complex residual correction
+
+显式初始化与构造语义：
+
+1positional embedding = 全零 [1,1024,96]
+2residual scale = 0.1
+3Conv2d/ConvTranspose2d/Linear = PyTorch 默认初始化
+4TransformerEncoder = 从一个 TransformerEncoderLayer clone depth=2
+
+不要为每层单独重新随机创建不同 encoder layer；历史实现把一个已初始化的 layer 传给 nn.TransformerEncoder(layer, depth)。其余默认初始化细节可能随 PyTorch 版本变化，因此训练级复现需要固定框架版本和 model construction 顺序。
+
+输出：
+
+1output = values + tanh(scale) * correction
+
+参数量：
+
+1346,683
+
+注意 346,687 是后续 SupportGatedTransformerProx 版本的参数量，基础 Stage 3 没有额外 gate/output scalar。
+
+4.3 失败机制
+
+Transformer 的长程建模能力没有自动转化为 Yak 结构优势：
+
+更容易拟合 measurement noise；
+
+背景非零 correction 更密集；
+
+延迟高于 CNN；
+
+Yak support 过大，底噪明显。
+
+因此当前项目不建议直接继续扩大 Transformer。
+
+5. SupportFusionADMM
+
+SupportFusionADMM 是对 CNN/Transformer proximal 的零保持和 support gating 改进。
+
+5.1 Support gate
+
+定义：
+
+1threshold = softplus(raw_threshold)
+2
+3support_gate(v) = |v| / (|v| + threshold + ε)
+
+对于 v=0：
+
+1support_gate(0) = 0
+
+因此 proximal correction：
+
+1correction = proximal(v)
+2gate = support_gate(v)
+3output = v + tanh(scale) * gate * correction
+
+5.2 SupportGatedCNNProx
+
+结构和普通 CNN proximal 相同：
+
+1Conv2d(2,32,3,padding=1)
+2GELU
+3Conv2d(32,32,3,padding=1)
+4GELU
+5Conv2d(32,32,3,padding=1)
+6GELU
+7Conv2d(32,2,3,padding=1)
+
+但 correction 乘以 support_gate(values)。
+
+5.3 SupportGatedTransformerProx
+
+Transformer 结构保持 Stage 3：
+
+1patch=8
+2dim=96
+3depth=2
+4heads=4
+
+输出 correction 乘以 support gate。
+
+5.4 X/Z 融合
+
+每层完成后，对 sparse 状态做最终清理：
+
+1clean_sparse = soft_threshold(sparse, output_threshold)
+2mask = support_gate(clean_sparse, output_gate_threshold)
+
+最后融合：
+
+1mix = sigmoid(raw_output_mix)
+2output = clean_sparse + mix * mask * (image - clean_sparse)
+
+默认：
+
+1output_threshold = 0.001
+2output_gate_threshold= 0.01
+3output_mix = 0.5
+
+5.5 局限
+
+Support gate 只能保证“零输入不会生成 correction”，不能自动识别真实飞机弱散射。它仍可能：
+
+删除弱结构；
+
+支撑过于保守；
+
+在 learned branch 中产生域相关响应。
+
+因此下一步使用 Stage 1 作为 support teacher。
+
+6. GuideSupportFusionADMM
+
+这是当前从 CNN/Transformer 转向 physics-guided support 的关键版本。
+
+6.1 两个 ADMM 分支
+
+模型同时维护两个分支：
+
+Frozen guide branch
+
+使用 Stage 1 checkpoint 中的 scalar schedule：
+
+1guide_raw_c
+2 guide_raw_tau
+3guide_raw_beta
+
+它们注册为 buffer，不训练。
+
+Guide checkpoint 路径由环境变量：
+
+1GUIDE_CHECKPOINT
+
+传入；默认相对路径为：
+
+1runs/admm_stage1_full_8gpu/checkpoint-last.pt
+
+加载协议只读取 checkpoint 的 model_state，并只复制三个 key：
+
+1raw_c → guide_raw_c
+2raw_tau → guide_raw_tau
+3raw_beta → guide_raw_beta
+
+每个 shape 必须与当前 num_layers 一致，否则报错。不会复制 Stage 1 的 optimizer、history，也不会复制任何 proximal 权重。三个 guide tensor 注册为 buffer，所以会随新模型 checkpoint 保存和迁移 device，但不计入 trainable parameter。
+
+Learned branch
+
+使用可训练参数：
+
+1raw_c
+2raw_tau
+3raw_beta
+
+并使用共享 SupportGatedCNNProx 或 SupportGatedTransformerProx。
+
+6.2 Guide branch 更新
+
+guide branch 使用普通 8 层 ADMM：
+
+1guide_image, guide_sparse = unroll(
+2 observed,
+3 softplus(guide_raw_c),
+4 softplus(guide_raw_tau),
+5 softplus(guide_raw_beta),
+6 proximal=False,
+7)
+
+6.3 Learned branch 更新
+
+1learned_image, learned_sparse = unroll(
+2 observed,
+3 softplus(raw_c),
+4 softplus(raw_tau),
+5 softplus(raw_beta),
+6 proximal=True,
+7)
+
+6.4 Firm support
+
+从 guide image 的相对峰值构造 support。
+
+可学习下边界：
+
+1low_db = -65 + 20 × sigmoid(raw_support_db)
+
+默认：
+
+1support_db_init = -55
+2support_width_db = 10
+
+因此：
+
+1high_db = low_db + support_width_db
+
+归一化峰值是逐样本、保留空间广播维度计算：
+
+1peak = torch.amax(abs(guide_image), dim=(-2,-1), keepdim=True)
+2peak = peak.clamp_min(1e-12)
+
+不是对整个 batch 取一个全局最大值。batch size 大于 1 时，每个样本都有自己的 dB 参考峰值。
+
+转换为幅度阈值：
+
+1low = peak × 10^(low_db/20)
+2high = peak × 10^(high_db/20)
+
+firm mask：
+
+1mask = clamp((|guide_image|-low)/(high-low+ε), 0, 1)
+2guide_clean = guide_image × mask
+
+6.5 Guide/learned 融合
+
+1mix = sigmoid(raw_mix)
+2output = guide_clean + mix × mask × (learned_image-guide_clean)
+
+默认：
+
+1output_mix = 0.5
+
+这一步的物理含义：
+
+Stage 1 决定“哪里可能有结构”；
+
+learned branch 只能在 guide support 中修正；
+
+support 外不能自由生成 CNN/Transformer 响应。
+
+6.6 Support 内 masked data consistency
+
+对每个可学习 step：
+
+1correction = Aᴴ(A(output)-S)
+2output = mask × (output - softplus(raw_step) × correction)
+
+support 外被重新乘为零。
+
+原始 Guide 版本：
+
+1dc_steps = 2
+
+这被证明对 support 内幅度求解不够充分。
+
+7. Round 32–36
+
+以下五轮是当前项目最后一组自主迭代。
+
+7.1 Round 32：Guide + 8-step DC
+
+模型：
+
+1GuideSupportFusionADMM
+2proximal = CNN
+3dc_steps = 8
+4support_width_db = 10
+
+训练目标：
+
+1image NMSE
+2+ clean echo NMSE
+3+ discrepancy
+4+ background
+
+关键假设：
+
+Stage 1 support 是对的，问题主要是 support 内的复数幅度没有被充分物理求解。
+
+结果：
+
+1point image NMSE = 0.00690
+2point clean echo NMSE = 0.00656
+3dense image NMSE = 0.17163
+4dense clean echo NMSE = 0.03911
+5Yak -40~-60 band = 0.820%
+6Yak >-60 support = 1.598%
+7Yak entropy = 2.689
+8parameter count = 19,718
+
+结论：当前五轮中综合最优。
+
+7.2 Round 33：Soft confidence band
+
+将单一 firm mask 改成三段式 confidence：
+
+1db >= -40： confidence = 1
+2-60 < db < -40： confidence = (db + 60) / 20
+3db <= -60： confidence = 0
+
+实现形式：
+
+1strong = (db >= -40).float()
+2weak = clamp((db + 60) / 20, 0, 1)
+3confidence = maximum(strong, weak)
+
+然后：
+
+1output = guide_image + mix × confidence × (learned_image-guide_image)
+
+使用 4 步 masked DC。
+
+结果：
+
+1point image NMSE = 0.00428
+2point clean echo NMSE = 0.00406
+3dense image NMSE = 0.23157
+4Yak -40~-60 band = 0.988%
+5Yak >-60 support = 1.532%
+6Yak entropy = 3.184
+
+结论：结构和背景仍然安全，但 dense 泛化劣于 Round 32。
+
+7.3 Round 34：Stage-1 residual refinement
+
+模型输出：
+
+1x_final = x_stage1 + mask_teacher × residual_cnn(x_stage1)
+
+Residual CNN：
+
+1Conv2d(2,32,3,padding=1)
+2GELU
+3Conv2d(32,32,3,padding=1)
+4GELU
+5Conv2d(32,2,3,padding=1)
+
+scale 初始化：
+
+10.05
+
+结果：
+
+1point image NMSE = 0.01234
+2dense image NMSE = 0.39823
+3Yak -40~-60 band = 31.753%
+4Yak >-60 support = 32.211%
+
+失败原因：
+
+teacher mask 是连续 mask，不是严格二值 support；
+
+residual CNN 在弱 support 上生成密集低幅 correction；
+
+Yak 图中大量响应是底噪，不是真实飞机结构。
+
+该方案不能直接作为主模型。
+
+7.4 Round 35：Support + explicit physics solve
+
+初始：
+
+1output = guide_image × guide_mask
+
+之后执行 8 次：
+
+1residual = A(output) - observed
+2output = mask × (
+3 output - softplus(raw_step[k]) × Aᴴ(residual)
+4)
+
+模型只学习 8 个物理 step size，不让 CNN 直接自由生成最终图像。
+
+结果：
+
+1point image NMSE = 0.00128
+2point clean echo NMSE = 0.00113
+3dense image NMSE = 0.69036
+4Yak -40~-60 band = 0.103%
+5Yak >-60 support = 0.256%
+
+结论：point-only 物理求解非常强，但 support 太硬，删除 Yak 弱结构，严重过稀疏。
+
+7.5 Round 36：多域混合 + support distillation
+
+训练数据混合：
+
+1point-only
+2structured aircraft
+3 dense aircraft
+
+默认：
+
+1structured_probability = 0.75
+
+模型使用 Round 33 的 confidence support。
+
+loss 中增加弱 support energy 约束：
+
+1support_energy = sum(|prediction|² × protected) / target_energy
+2support_loss = mean(relu(0.05 - support_energy))
+
+总 loss：
+
+1image
+2+ 0.5 × clean_echo
+3+ 0.1 × discrepancy
+4+ 0.2 × background
+5+ 0.1 × support_loss
+
+结果：
+
+1point image NMSE = 0.00631
+2point clean echo NMSE = 0.00593
+3dense image NMSE = 0.18635
+4Yak -40~-60 band = 1.087%
+5Yak >-60 support = 1.565%
+6Yak entropy = 3.554
+
+结论：dense 泛化改善，但 Yak support 没有超过 Round 32；当前 support distillation 仍然太弱。
+
+8. 数据集复刻
+
+8.1 Point-only synthetic
+
+每个样本使用：
+
+1rng = numpy.random.default_rng(seed + index)
+
+生成稀疏复数 scatterer：
+
+随机位置；
+
+随机幅度；
+
+随机相位；
+
+峰值归一化；
+
+使用同一个 forward operator 生成 clean echo；
+
+snr ~ Uniform(-10,30)；
+
+加复数 Gaussian noise。
+
+噪声标准差：
+
+1power = mean(|clean|²)
+2std = sqrt(power / 10^(snr/10) / 2)
+3noise = std × (N(0,1) + iN(0,1))
+
+Point-only 的离散采样必须按下面的 NumPy 语义复刻：
+
+1count = int(rng.integers(3, 30 + 1)) # 3 和 30 都可能取到
+2rows = rng.integers(0, P, size=count) # 0 <= row < P
+3cols = rng.integers(0, Q, size=count) # 0 <= col < Q
+4amplitude = rng.uniform(0.5, 1.0, count)
+5phase = rng.uniform(-pi, pi, count)
+
+位置在全图整数网格上均匀采样。多个 scatterer 可以落在同一像素，复数值用 += 相加，随后才按全图峰值归一化。
+
+非缓存历史任务使用：
+
+1rng = np.random.default_rng(dataset_seed + index)
+
+如果 cache=True，历史实现不是逐 index 重置 RNG，而是创建一次 default_rng(dataset_seed) 后顺序生成整个数据集。因此 cache 与 no-cache 在相同 dataset seed 下并不保证逐样本相同。正式 Round 1–36 的相关启动脚本使用 --no-cache 或 dataset 内部 cache=False，复刻历史结果应使用逐 index RNG。
+
+混合数据集每个 index 的顺序是：
+
+1rng = default_rng(seed + index)
+2is_structured_or_dense = rng.random() < probability
+
+如果该样本落入 point branch，传给 point generator 的是已经消耗过一次 rng.random() 的同一个 RNG。因此 mixed dataset 中的 point 样本不等于纯 SyntheticISARDataset 在相同 seed/index 下的样本。
+
+8.2 Structured aircraft v1
+
+目标中包含：
+
+一条机身线段；
+
+一条主翼线段；
+
+一条尾翼线段；
+
+两个 engine/hub cluster；
+
+随机缺失点；
+
+坐标抖动；
+
+随机幅度和相位。
+
+默认结构参数范围：
+
+1center row ∈ [0.4P, 0.6P]
+2center col ∈ [0.4Q, 0.6Q]
+3angle ∈ [-0.35,0.35]
+4body length ∈ [0.14P,0.27P]
+5wing span ∈ [0.18Q,0.38Q]
+
+两个 hub 的精确中心为：
+
+1hub(sign) = center - 0.05*length*axis + sign*0.23*span*wing
+2sign in {-1,+1}
+
+每个 hub 追加 5 个点，每点坐标噪声为 Normal(0,[2.0,1.0])。hub 和三条线段的点最终统一进入同一个 coords 列表，因此它们使用相同的：
+
+1amplitude ~ Uniform(0.35,1.0)
+2phase ~ Uniform(-π,π)
+3round-to-nearest integer pixel
+4out-of-bounds point 丢弃
+
+Structured-v1 的 RNG 调用顺序也属于逐样本复刻的一部分：
+
+11. 先抽 domain Bernoulli；
+22. 抽 center、angle、length、span；
+33. 依次遍历 body/main-wing/tail 的 linspace 点，逐点抽删除 Bernoulli；
+44. 未删除点立刻抽 coordinate jitter，坐标追加到 coords；
+55. 依次为左右 hub 各抽 5 次 jitter，追加到 coords；
+66. 所有坐标收集完后，才按 coords 顺序逐点抽 amplitude 和 phase；
+77. 峰值归一化；生成 clean echo；抽 SNR；最后抽复 Gaussian noise。
+
+如果在生成坐标时就同时抽幅度/相位，会改变后续 RNG 流，从而无法逐样本一致。
+
+8.3 Dense aircraft v2
+
+Dense v2 解决 v1 只有离散点的问题：
+
+机身、主翼、尾翼是连续散射带；
+
+每个散射点使用 Gaussian splat；
+
+结构带具有厚度；
+
+amplitude 沿结构 taper；
+
+phase 具有 global phase 和 phase slope；
+
+保留 nose、tail、engine、wing-tip landmarks；
+
+支撑规模约 2.83%。
+
+默认：
+
+1body count = 100
+2wing count = 70
+3tail count = 36
+4structured probability = 0.5 或 0.75
+
+Dense v2 的六个 landmark 不是模糊的“nose/tail/engine/wing-tip”，其精确相对坐标为：
+
+1nose = center - 0.49*length*axis
+2tail = center + 0.49*length*axis
+3
+4inner_left = center - 0.07*length*axis - 0.25*span*wing
+5inner_right = center - 0.07*length*axis + 0.25*span*wing
+6wingtip_left = center - 0.07*length*axis - 0.49*span*wing
+7wingtip_right = center - 0.07*length*axis + 0.49*span*wing
+
+每个 landmark 在 splat 前再加：
+
+1coordinate jitter ~ Normal(0,[0.5,0.3])
+2amplitude ~ Uniform(0.55,1.0)
+3phase = global_phase + Normal(0,0.35)
+4Gaussian sigma = (1.15,0.85)
+
+Dense 三条结构带的完整端点为：
+
+1body_start = center - 0.50*length*axis
+2body_end = center + 0.50*length*axis
+3
+4wing_center = center - 0.07*length*axis
+5wing_start = wing_center - 0.50*span*wing
+6wing_end = wing_center + 0.50*span*wing
+7
+8tail_center = center + 0.38*length*axis
+9tail_start = tail_center - 0.24*span*wing
+10tail_end = tail_center + 0.24*span*wing
+
+不要误写成 Structured-v1 的主翼 -0.05*length 和尾翼 0.22*span。
+
+9. 训练规范
+
+9.1 通用训练配置
+
+Round 32–36：
+
+1train_samples = 4000
+2validation_samples = 500
+3test_samples = 500
+4epochs = 20
+5batch_size = 2
+6learning_rate = 1e-3
+7optimizer = AdamW
+8weight_decay = 1e-5
+9gradient_clip_norm = 10
+10seed = 3200
+11AMP = bfloat16 on CUDA
+
+DDP：
+
+14 GPUs per job
+2find_unused_parameters=True
+
+设置 find_unused_parameters=True 是因为 Round 34/35 中部分 guide 参数不参与最终 loss；否则第二个 DDP iteration 会报 reduction 错误。
+
+9.1.1 AMP、GradScaler 和数值环境
+
+所有正式 CUDA 训练的 train batch 都在：
+
+1torch.autocast("cuda", dtype=torch.bfloat16)
+
+中执行 forward 和 loss，并同时使用：
+
+1torch.amp.GradScaler("cuda")
+
+代码没有覆盖 GradScaler 构造参数，因此当前 PyTorch 默认是：
+
+1init_scale = 65536
+2growth_factor = 2.0
+3backoff_factor = 0.5
+4growth_interval = 2000
+
+发生 non-finite gradient 时 scaler 可以跳过 optimizer step，并降低 scale；因此即使 bf16 通常不依赖 scaling，历史轨迹仍包含 GradScaler 状态。base/support checkpoint 保存 scaler_state，Round 32–36 checkpoint 不保存 scaler state。
+
+validation 和 test 都在 torch.no_grad() 下运行，但不进入 autocast，因此走默认 fp32/complex64 路径。complex_from_channels 不接受 float16/bfloat16 作为 torch.complex 分量；若输入不是 float32/float64，会先执行 values.float()，所以 CNN/Transformer 可以在 bf16 中计算，而进入 FFT/complex 边界时提升到 float32/complex64。
+
+确定性相关实际行为：
+
+1base trainer 和 support trainer：CUDA 时 cudnn.benchmark=True
+2Round 32–36 trainer：没有设置 cudnn.benchmark
+3所有 trainer：未启用 torch.use_deterministic_algorithms(True)
+4正式大多数 run 脚本：OMP_NUM_THREADS=1, NCCL_DEBUG=WARN
+5Dense-v2 pilot shell：没有显式设置 OMP_NUM_THREADS
+
+所以不能笼统声称全部脚本数值环境完全一致。训练级复现应保存 PyTorch/CUDA/cuDNN 版本、GPU 型号、GradScaler state，并按对应脚本族恢复环境。
+
+9.2 Noise-aware loss
+
+给定预测图像 X_pred、目标图像 X_true 和 observed measurement S：
+
+1S_clean = A(X_true)
+2S_pred = A(X_pred)
+
+image loss：
+
+1L_image = ||X_pred-X_true||² / (||X_true||²+ε)
+
+clean echo loss：
+
+1L_clean_echo = ||S_pred-S_clean||² / (||S_clean||²+ε)
+
+observed residual 只记录，不单独作为唯一优化目标：
+
+1L_observed = ||S_pred-S||² / (||S||²+ε)
+
+discrepancy：
+
+1noise_true = ||S-S_clean||² / ||S||²
+2residual_pred = ||S_pred-S||² / ||S||²
+3L_discrepancy = (residual_pred-noise_true)²
+
+background loss：
+
+根据目标非零位置建立 support；
+
+用 3×3 max-pool 保护目标邻域；
+
+其余区域作为 background；
+
+对 background 的预测幅度施加 L1+L2 惩罚。
+
+最终：
+
+1L_total = L_image
+2 + 0.5 × L_clean_echo
+3 + 0.1 × L_discrepancy
+4 + 0.2 × L_background
+5 + optional 0.1 × L_support
+
+9.3 Checkpoint selector
+
+每轮保存：
+
+1checkpoint-best.pt
+2checkpoint-last.pt
+3history.json
+4metrics.json
+
+Round 32–36 使用：
+
+1score = validation_total + 0.5 × validation_background
+
+不能选择：
+
+1observed residual 最低的 checkpoint
+
+因为这可能等价于选择“拟合最多噪声”的模型。
+
+基础训练器 Round 1–3、12–15 的 checkpoint-best.pt 判据是：
+
+1current_validation = validation["total"]
+2if current_validation < best_validation:
+3 save("checkpoint-best.pt")
+
+但必须保留一个历史实现细节：validation 通过 run_epoch(..., optimizer=None) 调用 compute_loss，没有把命令行的 echo_weight 和 sparse_weight 继续传入，因此 validation 使用函数默认值：
+
+1validation echo_weight = 0.1
+2validation sparse_weight = 1e-4
+
+所以：
+
+1R1：train echo=.1，validation echo=.1，一致
+2R2/R3：train echo=.5，validation echo=.1，不一致
+3R12–R15：train echo=.5，validation echo=.1，不一致
+
+这不是推荐设计，而是已经完成实验的真实 selector 行为。为了复刻现有 checkpoint-best.pt 必须保留；若修复为 validation 也使用 .5，应作为新实验而不是历史复刻。
+
+Round 4–7 的 background 精确为纯 L2：
+
+1support = (abs(target) > 1e-6).float()[:,None]
+2protected = max_pool2d(support, 3, 1, 1)[:,0]
+3bg = 1-protected
+4L_bg_energy = mean_batch(
+5 sum_hw(abs(prediction)**2 * bg)
+6 / clamp_min(sum_hw(abs(target)**2), 1e-8)
+7)
+
+Round 8–11、16–31 的 background 为：
+
+1L_bg_l2 = L_bg_energy
+2rms = sqrt(mean_hw(abs(target)**2)).clamp_min(1e-8)
+3L_bg_l1 = mean_batch(mean_hw(abs(prediction)*bg) / rms)
+4L_background = L_bg_l2 + L_bg_l1
+
+它与 Round 32–36 的 background 数学定义相同；差异只在总 loss 中的权重。
+
+10. 评测规范
+
+固定评测必须包括：
+
+1point-only synthetic：500 samples
+2dense-only synthetic：500 samples
+3Yak-42：seed 0–9
+
+报告：
+
+1image_nmse
+2clean_echo_nmse
+3observed_residual
+4true_noise_residual
+5discrepancy
+6background
+7entropy
+8band_40_60_pixel_fraction
+9support_above_40_fraction
+10support_above_60_fraction
+11parameter_count
+12latency_ms
+
+可视化：
+
+对图像做 fftshift；
+
+计算归一化幅度 dB：
+
+1db = 20 log10(|X|/max(|X|)+ε)
+
+显示范围固定为：
+
+1[-60, 0] dB
+
+panel 数量按评测脚本区分，不存在全局统一的“三面板”要求；详见第 10.5 节。
+
+模型选择顺序：
+
+11. Yak-42 机体、机翼、尾翼是否保留
+22. -40~-60 dB 是否是结构而非全图底噪
+33. 背景是否干净
+44. clean echo/image NMSE
+55. discrepancy 是否合理
+66. 延迟和参数量
+
+不要只根据以下单项做结论：
+
+1entropy
+2observed residual
+3>-60 dB support 像素比例
+
+10.1 Yak42.mat 的精确预处理
+
+这是复现 Yak 数字最关键的一段。MAT 文件必须包含二维复数变量 y，且 azimuth 列数至少为 192。处理顺序如下：
+
+1raw = scipy.io.loadmat(path)["y"].astype(np.complex128)
+2selected = np.array(raw[:, 128:192], copy=True) # MATLAB 129:192
+3selected /= np.max(np.abs(selected))
+
+只截取 azimuth 列，不裁剪 range 行。当前文件截取后尺寸为 (256,64)。
+
+添加固定复数噪声：
+
+1NOISE_STD = 0.505 * 0.03 * sqrt(2.0) # 约 0.021425
+2rng = np.random.default_rng(seed)
+3noise = NOISE_STD * (
+4 rng.standard_normal(selected.shape)
+5 + 1j*rng.standard_normal(selected.shape)
+6)
+7noisy = selected + noise
+
+注意 NOISE_STD 分别乘 real 和 imaginary 标准正态，因此复噪声总功率包含两个分量。报告 SNR 的历史计算为：
+
+1noise_variance = np.var(noise, ddof=1)
+2signal_energy = np.linalg.norm(selected)**2
+3snr_db = 10*log10(signal_energy / (noise_variance*selected.size))
+
+最后在 axis 0 做 IFFT：
+
+1measurements = np.fft.ifft(noisy, axis=0).astype(np.complex128)
+
+这里不做 fftshift，不再 peak-normalize，也不先通过 synthetic forward operator。得到的 measurements 才是传统 ADMM 和网络共同使用的 (256,64) 输入。送入网络前转换为 complex64，再堆成 [1,2,256,64] 的 real/imag channels。
+
+历史 31 轮总览固定 seed=0。Round 32–36 聚合评测对 seed 0,1,...,9 分别完整重复上述“重新生成噪声 + IFFT”流程。
+
+10.2 Entropy 的精确定义
+
+这里的 entropy 不是直方图熵，也没有除以 log(PQ)。它是图像能量形成的离散概率分布的自然对数 Shannon entropy：
+
+1power = abs(image)**2
+2total = power.sum()
+3if total == 0:
+4 entropy = 0.0
+5else:
+6 probability = power[power > 0] / total
+7 entropy = -(probability * np.log(probability)).sum()
+
+因此文档其他位置的“normalized image entropy”应理解为“按总能量归一化概率后计算的 entropy”，不是归一到 [0,1] 的 entropy。
+
+10.3 Fast-ADMM-40 的精确参数和更新
+
+基线调用：
+
+1admm_2d_fast(
+2 measurements,
+3 image_shape=(512,128),
+4 tol=1e-5,
+5 alpha=0.0065,
+6 delta=1.0,
+7 max_iterations=40,
+8)
+
+初始化：
+
+1X0 = A_H(S)
+2Z0 = zeros_like(X0)
+3U0 = zeros_like(X0)
+
+第 k 次更新：
+
+1D = Z-U
+2X_next = D - A_H(A(D)-S)/(delta+1)
+3Z_next = complex_soft_threshold(X_next+U, alpha/delta)
+4U_next = U + X_next-Z_next
+5relative_change = norm(X_next-X) / norm(X)
+
+若旧 X 的 norm 为 0：change 也为 0 时 relative change=0，否则为 inf。每步先保存最新 X/Z/U，再检查 relative_change <= 1e-5；因此“Fast-ADMM-40”是最多 40 步，可能提前停止。返回和画图的是 X，不是 Z。
+
+基础 synthetic selector 使用的固定 Fast-ADMM reference 为：
+
+1image_nmse = 0.4275802185509148
+2echo_nmse = 0.11309962187112717
+3image_entropy= 4.142121178538367
+4iterations = 40
+
+Stage 1 初始化直接来自这个经典 ADMM。当 delta=1 时：
+
+1c_init = 1/(1+delta) = 0.5
+2tau_init = alpha/delta = 0.0065
+3beta_init = 1.0
+
+所以 Stage 1 不是任意选择三个初值，而是把 Fast-ADMM 的固定更新系数展开为逐层可学习 schedule。若所有层保持初始化不训练，其更新形式与该经典基线的对应系数一致；差别还包括固定迭代数/早停和网络固定返回第 L 层 X_L。
+
+10.4 dB、band、support 和保存 DPI
+
+可视化图像：
+
+1magnitude = abs(fftshift(image, axes=1))
+2peak = max(magnitude.max(), 1e-12)
+3db_display = clip(20*log10(magnitude/peak + 1e-12), -60, 0)
+
+统计 band/support 时不需要 fftshift，因为 shift 不改变像素比例；历史实现使用：
+
+1peak = max(abs(image).max(), 1e-15)
+2db_metric = 20*log10(abs(image)/peak + 1e-15)
+3band = (-60 <= db_metric) & (db_metric < -40)
+4support40 = mean(db_metric >= -40)
+5support60 = mean(db_metric >= -60)
+
+单图和 group 图保存为 dpi=180；31 轮 master sheet 保存为 dpi=160。
+
+一个必须知道的后续评测历史细节：当前 Round 32–36 的双栏 yak42_seed0_full.png 脚本在 seed 0–9 循环结束后，模型图使用保存下来的 seed-0 prediction，但 Fast-ADMM baseline 调用使用循环变量中最后保留的 measurement，即 seed 9。数值 JSON 中各 seed 的网络指标不受影响；若要逐像素复刻已有双栏图片，需要保留这个行为。若要制作论文正式公平对比图，应修复为 baseline 与网络都使用 seed 0，并把修复后的图作为新产物，不覆盖历史图。
+
+10.5 不同评测/可视化脚本的 panel、seed 和用途
+
+流程Synthetic fixed seedYak seedsYak panel用途evaluate_structured_generalization.py3,000,0000–93Structured noise-aware 公平评测：Fast-ADMM、Stage 1、当前 SupportFusionevaluate_rounds32_36.py3,200,0000–92Round 32–36：Fast-ADMM、当前 variant；没有 Stage 1 panelgenerate_all_complete_training_visualizations.py无 synthetic fixed setseed 0每 group 3 或 4；master 31旧 R1–31 统一 checkpoint 的 Yak 总览generate_paper_visualizations.py2,000,000 的第一个 point sampleseed 04Fast-ADMM、Stage 1、Stage 2、Stage 3evaluate_reconstruction.py无默认 0–4不画图通用 Yak entropy/速度 JSON
+
+因此原先第 10 节“必须同时比较 Fast-ADMM、Stage 1、当前网络”的表述只适用于 Structured 三面板流程，不适用于 Round 32–36 的真实双面板产物。
+
+Round 32–36 的 point-only 和 dense-only 各 500 样本都使用同一个 dataset seed 3,200,000。Structured generalization 的 point-only/structured-only 各 500 样本使用 seed 3,000,000。这些是训练/validation/test seed 之外的独立、固定 post-training evaluation seed。
+
+注意：evaluate_rounds32_36.py 输出的 JSON 没有把这个 synthetic dataset seed 写入 result；JSON 中只能看到样本数和指标。3,200,000 只存在于评测脚本 argparse 默认值或显式命令行，因此无代码复刻必须由本文档固定记录。Structured evaluator 的返回子字典会写 seed=3,000,000，两套 artifact 的自描述程度并不一致。
+
+10.6 旧“Round 1–10”编号陷阱
+
+generate_training_round_visualizations.py 是早期按“代表方案”编号的脚本，不是用户后来定义的“一个完整训练任务算一轮”。映射如下：
+
+旧脚本编号旧脚本代表36 轮正式编号1Stage 1 Scalar-8R12Stage 2 CNNR23Stage 3 TransformerR34Transformer SupportFusion bg=.20R75CNN Guide bg=.20R96Deep Scalar-32R157Balanced Scalar echo=.15R168Noise-aware CNN clean=.1R20；旧脚本加载 best-score，31 轮 group 图加载 best-constrained9Structured CNN p=.50R2410Dense Transformer p=.25R30
+
+这个脚本的“Round 4”绝不等于正式 R4。生成八张 group 图和 31 轮 master 时必须使用正式 generate_all_complete_training_visualizations.py 的顺序。
+
+10.7 R1–31 统一可视化的模型族派发
+
+旧 31 轮 loader 不依赖 model_family，而是按 checkpoint 内容派发：
+
+1config = dict(payload["model_config"])
+2state = payload["model_state"]
+3keys = set(state)
+4
+5if "raw_support_db" in keys:
+6 model = GuideSupportFusionADMM(**config)
+7elif "raw_output_threshold" in keys:
+8 model = SupportFusionADMM(**config)
+9elif "proximal" not in config:
+10 model = DeepScalarADMM(**config)
+11else:
+12 model = PhysicsUnrolledADMM(**config)
+
+判断顺序不能交换：Guide 也包含 support-gated proximal，但用 raw_support_db 优先识别。Round 32–36 不走这套 loader，而是读取 model_config["round_variant"] 后调用 build_model()。
+
+10.8 延迟测量协议不是单一口径
+
+来源WarmupTimed repeatsCUDA synchronize结果位置base trainer benchmark_model320前后都有R1–3、R12–15 training metricssupport trainer benchmark520前后都有R4–11、R16–31 training metricsRound 32–36 trainer520前后都有；仅 CUDA 报 latencymixed metrics.jsonevaluate_structured_generalization5默认 30前后都有Structured fixed evaluationevaluate_rounds32_365默认 30前后都有point/dense/Yak full evaluationevaluate_reconstruction network320没有显式 synchronize通用 Yak JSON，GPU 数字可能偏小evaluate_reconstruction Fast-ADMM35CPU NumPy，无 CUDA通用 Yak JSON
+
+因此跨表比较 latency 前必须确认来源。论文速度表应重新统一为同一空闲 GPU、相同输入、相同 warmup/repeats、相同 synchronize；历史数字只用于复刻现有记录。
+
+11. 当前方案排序
+
+当前综合排序：
+
+1Round 32 Guide + 8-step DC
+2> Round 36 Multi-domain confidence
+3> Round 33 Soft confidence band
+4> Stage 1 Scalar-8
+5> Round 35 Support physics
+6> Round 34 Residual CNN
+
+当前最推荐主线
+
+1Stage 1 physics schedule
+2+ Stage 1 weak-structure support
+3+ support 内 8–12 步显式 DC
+4+ 分层 weak-structure recall/coverage loss
+5+ clean echo/discrepancy objective
+
+不建议当前直接：
+
+1扩大 CNN
+2扩大 Transformer
+3只追求 observed residual
+4只使用硬 support
+
+12. 复刻时的推荐实现顺序
+
+另一个对话应按以下顺序实现：
+
+Step 1：实现基础工具
+
+1complex_from_channels
+2complex_to_channels
+3fast_forward_operator
+4fast_adjoint_operator
+5complex_soft_threshold
+
+先用随机复数矩阵验证 forward/adjoint 的形状。
+
+Step 2：实现 Stage 1
+
+先只实现：
+
+1PhysicsUnrolledADMM(proximal='none', num_layers=8)
+
+验证：
+
+输入 [B,2,256,64]；
+
+输出 [B,2,512,128]；
+
+参数量只有 24 个核心 scalar；
+
+参数全部为正；
+
+输出没有 NaN。
+
+Step 3：实现 CNN 和 Transformer proximal
+
+依次实现：
+
+1ComplexResidualProx
+2TransformerProx
+
+然后嵌入 Stage 1 的每层 ADMM 更新。
+
+Step 4：实现 SupportFusion
+
+加入：
+
+1support_gate
+2SupportGatedCNNProx
+3SupportGatedTransformerProx
+4X/Z fusion
+
+Step 5：实现 GuideSupportFusion
+
+加入：
+
+1Stage 1 frozen guide
+2firm_support
+3learned branch
+4support-masked DC
+
+Step 6：实现 Round 32–36
+
+使用以下五个类：
+
+1Round32GuideDC
+2Round33ConfidenceBand
+3Round34Stage1Residual
+4Round35SupportPhysics
+5Round36SupportDistill
+
+Step 7：实现数据集和训练器
+
+最后实现：
+
+1Point synthetic
+2StructuredAircraft
+3DenseAircraft
+4noise-aware loss
+5DDP trainer
+6checkpoint selector
+
+这样可以先验证网络 forward，再验证训练和 domain generalization。
+
+13. 复刻验收标准
+
+另一个实现满足以下条件才算结构复刻成功：
+
+Stage 1 为 8 层 ADMM unfolding；
+
+每层拥有正值 c/tau/beta；
+
+Stage 2 CNN 结构为 2→32→32→32→2，3×3 convolution，GELU；
+
+Stage 3 Transformer 为 patch=8、dim=96、2 层、4 heads；
+
+Guide branch 使用冻结 Stage 1 schedule；
+
+Round 32 使用 8 个 support-masked DC steps；
+
+Round 33 使用 >-40、-40~-60、<-60 三段 confidence；
+
+Round 34 使用 Stage 1 residual CNN；
+
+Round 35 使用 8 个显式 physics solve step；
+
+Round 36 使用 point/dense 混合训练；
+
+loss 包含 clean echo 和 discrepancy，而不是只优化 noisy observed echo；
+
+输入输出形状和复数通道约定一致；
+
+[-60,0] dB 可视化流程一致；
+
+能解释 Round 34 底噪泄漏和 Round 35 过度稀疏的原因。
+
+14. 重要限制
+
+没有 checkpoint 时：
+
+可以复刻结构；
+
+可以复刻 forward；
+
+可以复刻 loss；
+
+可以复刻训练流程；
+
+可以重新训练得到同类结果；
+
+不能保证逐参数相同；
+
+不能保证逐像素输出相同。
+
+若要逐参数复现，额外需要：
+
+1checkpoint-best.pt
+2Stage 1 teacher checkpoint
+3训练数据版本
+4随机种子
+5PyTorch/CUDA 版本
+6FFT 后端
+
+本文档不包含这些大文件，避免把 checkpoint 或服务器内部运行信息暴露到公开仓库。
+
+15. 八张历史方案图与 Round 1–31 完整逐项复刻
+
+这一节专门对应：
+
+1runs/admm_paper/figures/all_complete_trainings/
+
+该目录中 group_01 到 group_08 共 8 张分组图片。每张 group 图片代表一个主要迭代方案，每个 panel 代表一个独立完成的训练任务。八组共包含 31 个完整训练任务。
+
+1group_01 → Round 1–3
+2group_02 → Round 4–7
+3group_03 → Round 8–11
+4group_04 → Round 12–15
+5group_05 → Round 16–19
+6group_06 → Round 20–23
+7group_07 → Round 24–27
+8group_08 → Round 28–31
+
+all_31_complete_trainings_yak42_seed0_60db.png 是 31 轮总览，不是第 9 个方案。所有 Yak 数字均来自同一个 Yak-42 seed 0、相同预处理、相同 FFT shift、相同裁剪和 [-60,0] dB 显示窗口。
+
+15.1 全部任务共同约定
+
+除 Round 1–3 的正式 full training 外，Round 4–31 均采用 pilot 规模：
+
+1image_shape = (512,128)
+2measurement_shape = (256,64)
+3train/val/test = 4000/500/500
+4epochs = 20
+5optimizer = AdamW
+6learning_rate = 1e-3
+7weight_decay = 1e-5
+8gradient clip = 10
+9AMP = bfloat16
+10seed = 0
+11GPUs per task = 4
+12CNN batch size = 2
+13Transformer batch = 1
+
+数据 seed 分割：
+
+1train seed = seed
+2validation seed = seed + 1,000,000
+3test seed = seed + 2,000,000
+
+point-only generator 默认：
+
+1scatterer count = randint[3,30]
+2amplitude = Uniform(0.5,1.0)
+3phase = Uniform(-π,π)
+4SNR = Uniform(-10,30) dB
+5target 按峰值幅度归一化
+
+15.2 指标口径的重要区别
+
+Round 1–3 和 Round 12–15 的 metrics.json 是传统训练器在最后 epoch 模型上的 synthetic 测试结果；图片加载指定的 checkpoint-last 或 checkpoint-best。
+
+Round 4–11、16–31 的 metrics.json 会先按照 selector 选择 checkpoint，再加载该 checkpoint 做测试。
+
+图片中的 observed residual 是 Yak measurement residual，不是 synthetic clean echo。
+
+Noise-aware/Structured/Dense 的 echo 字段代表 clean-target echo；Support/Guide/Balanced 的 echo 代表 noisy observed echo。
+
+因此不同组的 echo 数字不能在不看定义的情况下直接横向比较。
+
+16. Group 01：Initial Full Models，Round 1–3
+
+对应图片：
+
+1group_01_initial_full_models_seed0_60db.png
+
+16.1 共同正式训练配置
+
+1train/val/test = 20000/1000/1000
+2epochs = 100
+3layers = 8
+4learning_rate = 0.001
+5sparse_weight = 0.0001
+68 GPUs
+
+Stage 1/CNN batch size 为 2，Transformer batch size 为 1。三者都使用相同 point-only synthetic generator。
+
+16.2 Round 1：Stage 1 Scalar-8
+
+1proximal = none
+2share_proximal = irrelevant
+3echo_weight = 0.1
+4parameter_count = 24
+5visual checkpoint = checkpoint-last.pt
+
+forward 完全等于第 2 节定义的 8 层 scalar ADMM。最后返回 X_8。
+
+16.3 Round 2：Stage 2 CNN proximal
+
+1proximal = cnn
+2share_proximal = True
+3channels = 32
+4depth = 3
+5echo_weight = 0.5
+6parameter_count = 19,707
+7visual checkpoint = checkpoint-best.pt
+
+唯一相对 Round 1 的结构变化是在每层 Z soft-threshold 后应用共享 CNN residual proximal。
+
+16.4 Round 3：Stage 3 Transformer proximal
+
+1proximal = transformer
+2share_proximal = True
+3patch = 8
+4embed_dim = 96
+5depth = 2
+6heads = 4
+7echo_weight = 0.5
+8parameter_count = 346,683
+9visual checkpoint = checkpoint-best.pt
+
+唯一相对 Round 1 的结构变化是在每层 Z 后应用共享 Patch Transformer residual proximal。
+
+17. Group 02：Zero-preserving Support Fusion，Round 4–7
+
+对应图片：
+
+1group_02_zero-preserving_support_fusion_seed0_60db.png
+
+17.1 共同网络
+
+四个任务全部使用第 5 节的 SupportFusionADMM：
+
+1layers = 8
+2prox_gate_threshold = 0.01
+3output_threshold = 0.001
+4output_gate_threshold = 0.01
+5output_mix = 0.5
+6echo_weight = 0.5
+
+CNN 参数量为 19,711；Transformer 参数量为 346,687。相比普通 Stage 2/3 多出的参数来自 proximal gate threshold、output threshold、output gate threshold 和 output mix。
+
+loss：
+
+1L = image_NMSE
+2 + 0.5 × noisy_observed_echo_NMSE
+3 + background_weight × background_L2
+
+这里的 background loss 只使用能量 L2，不包含后面 Guide/Balanced 使用的 L1+L2 组合。
+
+17.2 四个任务
+
+RoundProximalBackground weightBatchVisual/selected checkpoint4CNN0.052checkpoint-best-constrained.pt5CNN0.202checkpoint-best-constrained.pt6Transformer0.051checkpoint-best-constrained.pt7Transformer0.201checkpoint-best-score.pt
+
+17.3 Checkpoint selector
+
+训练器同时维护：
+
+1best-score:
+2 validation_total + 5 × validation_background 最小
+3
+4best-image:
+5 validation image 最小
+6
+7best-echo:
+8 validation echo 最小
+9
+10best-constrained:
+11 validation image < 0.03
+12 validation echo <= Fast-ADMM reference echo 0.1130996
+13 然后选择 background 最小
+
+最终优先使用 best-constrained；若不存在，回退 best-score。
+
+17.4 结论
+
+zero-preserving gate 减少了零点 correction，但没有从根本上解决真实 Yak 的低幅背景。Round 4–6 仍有 37%–58% 的 Yak support。Round 7 背景很干净，但 support 只有约 0.28%，属于过度抑制。
+
+18. Group 03：Stage-1 Guide + Firm Support，Round 8–11
+
+对应图片：
+
+1group_03_stage-1_guide_plus_firm_support_seed0_60db.png
+
+18.1 共同网络
+
+四个任务使用第 6 节 GuideSupportFusionADMM：
+
+1frozen Stage 1 guide
+2learned 8-layer branch
+3support_db_init = -55 dB
+4support_width_db = 10 dB
+5dc_steps = 2
+6dc_step_init = 0.5
+7output_mix = 0.5
+8echo_weight = 0.5
+
+background penalty 改为 L1+L2：
+
+1L_background = normalized background energy
+2 + normalized background mean magnitude
+
+总 loss：
+
+1L = image_NMSE
+2 + 0.5 × noisy_observed_echo_NMSE
+3 + background_weight × background_L1+L2
+
+18.2 四个任务
+
+RoundLearned proximalBackground weightBatchParameter countSelected checkpoint8CNN0.05219,712checkpoint-best-score.pt9CNN0.20219,712checkpoint-best-score.pt10Transformer0.051346,688checkpoint-best-score.pt11Transformer0.201346,688checkpoint-best-score.pt
+
+18.3 为什么四张图相似
+
+四个任务共享同一个冻结 Stage 1 guide 和同一类 firm mask。learned branch 只能在该 mask 内修正，因此 CNN/Transformer 的结构差异被 support 约束显著压缩。四张图相似不表示 learned branch 没运行。
+
+18.4 结论
+
+该组成功把 Yak band 降到约 0.46%–0.58%，但 >-60 dB support 只有约 0.90%–1.04%，小于 Stage 1 的约 3.2%。这说明 support 位置基本正确，但 dc_steps=2 和 firm mask 都偏保守，促成了后来的 Round 32。
+
+19. Group 04：Deep Scalar Unfolding，Round 12–15
+
+对应图片：
+
+1group_04_deep_scalar_unfolding_seed0_60db.png
+
+19.1 网络
+
+这四个模型没有 CNN、没有 Transformer，也没有 support gate。它们就是 Stage 1 scalar ADMM 的深层版本：
+
+1DeepScalarADMM(num_layers=L)
+2参数量 = 3L
+3最后返回 X_L
+
+训练实际调用基础 PhysicsUnrolledADMM(proximal=none)，结构等价于 DeepScalarADMM。
+
+19.2 训练参数
+
+1train/val/test = 4000/500/500
+2epochs = 20
+3batch = 2
+4learning_rate = 0.001
+5echo_weight = 0.5
+6sparse_weight = 0.0001
+7background loss = 无
+
+RoundLayersScalar parametersVisual checkpoint121236checkpoint-best.pt131648checkpoint-best.pt142472checkpoint-best.pt153296checkpoint-best.pt
+
+19.3 为什么深层模型失败
+
+这组把 echo weight 从 Stage 1 的 0.1 提高到 0.5，同时没有 background penalty。更多层数给了模型更强的 measurement fitting 能力，结果不是更干净，而是更充分地把 measurement noise 投影回图像。四个模型 Yak band 都超过 80%。
+
+关键结论：
+
+1增加 ADMM unfolding 深度 ≠ 自动提升真实图像质量
+
+在 noisy observed echo loss 下，深度主要扩大了噪声拟合能力。
+
+20. Group 05：Balanced Scalar Echo Sweep，Round 16–19
+
+对应图片：
+
+1group_05_balanced_scalar_echo_sweep_seed0_60db.png
+
+20.1 网络
+
+四个任务使用相同的 12 层 DeepScalarADMM：
+
+1num_layers = 12
+2parameter_count = 36
+3无 CNN
+4无 Transformer
+5无 support gate
+
+命令行中虽然传入了 --proximal cnn，但 DeepScalarADMM 构造函数通过 **ignored 忽略该参数，实际网络仍是纯 scalar。这一点必须复刻，否则会错误地实现成 CNN 模型。
+
+20.2 Loss
+
+1L = image_NMSE
+2 + echo_weight × noisy_observed_echo_NMSE
+3 + 0.1 × background_L1+L2
+
+四个任务唯一变化是 echo_weight：
+
+RoundEcho weightBackground weightLayersBatchSelected checkpoint160.150.10122checkpoint-best-score.pt170.250.10122checkpoint-best-score.pt180.350.10122checkpoint-best-score.pt190.450.10122checkpoint-best-score.pt
+
+20.3 Selector
+
+因为复用了 support trainer：
+
+1score = validation total + 5 × validation background
+
+最终四个任务都选择 checkpoint-best-score.pt。
+
+20.4 结论
+
+echo weight 越大：
+
+1observed residual 单调下降
+2Yak band/support 单调上升
+
+Round 16 最接近 Stage 1 的视觉平衡；Round 17–19 逐步把 measurement noise 解释成图像结构。这组是“低 noisy echo residual 不等于好图像”的直接消融证据。
+
+21. Group 06：Noise-aware Clean Echo，Round 20–23
+
+对应图片：
+
+1group_06_noise-aware_clean_echo_seed0_60db.png
+
+21.1 网络
+
+使用 SupportFusionADMM：
+
+1layers = 8
+2CNN 或 Transformer support-gated proximal
+3output X/Z support fusion
+4background_weight = 0.1
+
+21.2 Noise-aware loss
+
+1S_clean = A(target)
+2S_pred = A(prediction)
+3
+4L = image_NMSE
+5 + clean_weight × NMSE(S_pred,S_clean)
+6 + 0.1 × discrepancy
+7 + 0.1 × background_L1+L2
+
+其中：
+
+1discrepancy = mean((predicted_noise_ratio - true_noise_ratio)^2)
+
+21.3 四个任务
+
+RoundProximalClean echo weightBatchParameter countSelected checkpoint20CNN0.1219,711checkpoint-best-constrained.pt21CNN0.5219,711checkpoint-best-constrained.pt22Transformer0.11346,687checkpoint-best-constrained.pt23Transformer0.51346,687checkpoint-best-constrained.pt
+
+注意：该训练器复用了旧的 best-constrained selector。此时 metrics 字典中的 echo 已经被替换为 clean echo，因此 constrained 条件实际检查 clean echo，而不是原始 noisy echo。这是当前历史复刻必须保留的行为。
+
+21.4 结论
+
+在 point-only synthetic 上，四个任务都达到约 0.0034–0.0038 image NMSE 和约 0.002 clean echo NMSE，证明 loss 修正有效。但 Yak support 只有约 0.02%–0.03%，网络只保留少量强散射点。失败原因从“拟合噪声”转移为“point-only synthetic prior 与飞机连续弱结构不匹配”。
+
+22. Group 07：Structured Aircraft v1，Round 24–27
+
+对应图片：
+
+1group_07_structured_aircraft_v1_seed0_60db.png
+
+22.1 网络和 loss
+
+网络仍为 SupportFusionADMM，loss 与 Group 06 相同：
+
+1clean echo weight = 0.1
+2discrepancy weight = 0.1
+3background weight = 0.1
+
+变化只在数据集。每次按 structured_probability=p 在 point-only 和 StructuredAircraft v1 之间选择。
+
+22.2 四个任务
+
+RoundProximalStructured probabilityBatchParameter countSelected checkpoint24CNN0.50219,711checkpoint-best-score.pt25Transformer0.251346,687checkpoint-best-score.pt26Transformer0.501346,687checkpoint-best-score.pt27Transformer0.751346,687checkpoint-best-score.pt
+
+22.3 Structured v1 精确生成
+
+1center row = Uniform(0.4P,0.6P)
+2center col = Uniform(0.4Q,0.6Q)
+3angle = Uniform(-0.35,0.35)
+4body length = Uniform(0.14P,0.27P)
+5wing span = Uniform(0.18Q,0.38Q)
+
+三条线段：
+
+1body: 35 samples, center±0.5×length×axis
+2main wing: 25 samples, body -0.05×length 位置，±0.5×span
+3 tail wing: 13 samples, body +0.38×length 位置，±0.22×span
+
+每个线点：
+
+118% 概率删除
+2坐标 jitter ~ Normal(0,[1.5,0.7])
+3amplitude ~ Uniform(0.35,1.0)
+4phase ~ Uniform(-π,π)
+
+两个 engine hub：
+
+1center - 0.05×length×axis ± 0.23×span×wing
+2每个 hub 5 个点
+3jitter ~ Normal(0,[2.0,1.0])
+
+最后峰值归一化、forward、SNR 和 Gaussian noise 与 point generator 一致。
+
+22.4 结论
+
+v1 虽然有飞机轮廓，但仍是独立随机相位离散点。网络没有学到真实连续机体弱结构。Yak support 仍只有约 0.03%–0.06%。
+
+23. Group 08：Dense Aircraft v2，Round 28–31
+
+对应图片：
+
+1group_08_dense-aircraft_v2_seed0_60db.png
+
+23.1 网络和 loss
+
+网络仍为 SupportFusionADMM，使用与 Group 06/07 相同的 noise-aware loss：
+
+1clean echo weight = 0.1
+2discrepancy weight = 0.1
+3background weight = 0.1
+
+23.2 四个任务
+
+RoundProximalDense probabilityBatchParameter countSelected checkpoint28CNN0.25219,711checkpoint-best-score.pt29CNN0.50219,711checkpoint-best-score.pt30Transformer0.251346,687checkpoint-best-score.pt31Transformer0.501346,687checkpoint-best-score.pt
+
+23.3 Dense v2 精确生成
+
+1center row = Uniform(0.42P,0.58P)
+2center col = Uniform(0.42Q,0.58Q)
+3angle = Uniform(-0.32,0.32)
+4body length = Uniform(0.16P,0.28P)
+5wing span = Uniform(0.22Q,0.42Q)
+6global phase = Uniform(-π,π)
+7phase slope = Uniform(-1.2,1.2)
+
+三条连续结构带：
+
+1body:
+2 count=100
+3 base amplitude=Uniform(0.10,0.24)
+4 Gaussian sigma=(2.5,1.25)
+5 phase offset=0
+6
+7main wing:
+8 center position=center-0.07×length×axis，半展长=0.50×span
+9 count=70
+10 base amplitude=Uniform(0.06,0.18)
+11 Gaussian sigma=(2.0,1.35)
+12 phase offset=+0.5
+13
+14tail:
+15 center position=center+0.38×length×axis，半展长=0.24×span
+16 count=36
+17 base amplitude=Uniform(0.05,0.15)
+18 Gaussian sigma=(1.8,1.15)
+19 phase offset=-0.4
+
+每个结构采样点：
+
+18% 概率删除
+2coordinate jitter ~ Normal(0,[0.45,0.25])
+3taper = 0.55 + 0.45×sin(πt)^2
+4texture = LogNormal(mean=0,sigma=0.22)
+5phase = global_phase + phase_offset + phase_slope×(t-0.5) + Normal(0,0.10)
+
+Gaussian splat 只保留 3σ 范围，低于 exp(-4.5) 的 kernel 元素清零。
+
+landmarks：
+
+1nose
+2tail
+3左右 engine/inner wing
+4左右 wing tip
+
+landmark amplitude Uniform(0.55,1.0)，phase 使用 global phase 加 Normal(0,0.35)，sigma=(1.15,0.85)。
+
+23.4 结论
+
+Dense v2 的 synthetic target 支撑更大，但 Yak 输出反而比 Structured v1 更稀疏。Round 30 的 mixed test 最好，但 Yak support 仍只有约 0.01%。这证明简单增加 synthetic target 密度不足以解决 domain gap。
+
+24. Round 1–31 完整结果表
+
+24.1 Synthetic 测试与模型成本
+
+下面的 echo 按各组训练器原定义记录：Group 01/02/03/04/05 是 observed echo，Group 06/07/08 是 clean echo。
+
+R方案Synthetic imageEchoObserved echo*BackgroundParamsLatency msSelected/visual checkpoint1Stage 1 Scalar-80.003890.21105——241.751checkpoint-last.pt2Stage 2 CNN0.028060.10432——197073.677checkpoint-best.pt3Stage 3 Transformer0.031130.09874——3466836.938checkpoint-best.pt4CNN bg=.050.029100.11393—0.02610197114.232checkpoint-best-constrained.pt5CNN bg=.200.028520.11608—0.02528197114.356checkpoint-best-constrained.pt6Transformer bg=.050.031520.11642—0.026163466877.329checkpoint-best-constrained.pt7Transformer bg=.200.029480.24377—0.005903466879.463checkpoint-best-score.pt8CNN bg=.050.004590.24877—0.00479197127.069checkpoint-best-score.pt9CNN bg=.200.003580.25113—0.00278197127.227checkpoint-best-score.pt10Transformer bg=.050.004760.24855—0.0050734668811.107checkpoint-best-score.pt11Transformer bg=.200.003680.25135—0.002743466889.826checkpoint-best-score.pt12Scalar-120.031930.10888——362.791checkpoint-best.pt13Scalar-160.032500.10902——483.611checkpoint-best.pt14Scalar-240.031630.10808——725.767checkpoint-best.pt15Scalar-320.031400.10795——967.193checkpoint-best.pt16Echo weight=.150.004770.22032—0.02362362.717checkpoint-best-score.pt17Echo weight=.250.008810.18772—0.05047362.891checkpoint-best-score.pt18Echo weight=.350.015630.16305—0.07445362.762checkpoint-best-score.pt19Echo weight=.450.021340.14619—0.09185362.961checkpoint-best-score.pt20CNN clean=.10.003420.002020.255830.00009197114.678checkpoint-best-constrained.pt21CNN clean=.50.003480.002000.255820.00010197114.930checkpoint-best-constrained.pt22Transformer clean=.10.003780.002310.255880.000113466877.704checkpoint-best-constrained.pt23Transformer clean=.50.003630.002050.255700.000043466877.853checkpoint-best-constrained.pt24CNN p=.500.103150.017800.267640.00190197114.604checkpoint-best-score.pt25Transformer p=.250.066240.013180.272530.000753466877.313checkpoint-best-score.pt26Transformer p=.500.123530.022380.271170.001903466878.134checkpoint-best-score.pt27Transformer p=.750.179720.032170.273880.003763466877.549checkpoint-best-score.pt28CNN p=.250.102630.033890.293040.00674197114.216checkpoint-best-score.pt29CNN p=.500.091960.023860.286540.00388197114.820checkpoint-best-score.pt30Transformer p=.250.050760.018700.284360.001983466877.451checkpoint-best-score.pt31Transformer p=.500.077880.029090.283120.003903466877.471checkpoint-best-score.pt
+
+Observed echo* 只在 noise-aware/structured/dense 的 metrics 中单独保存；其他组的 Echo 本身就是 observed echo。
+
+24.2 统一 Yak-42 seed 0 指标
+
+RGroupVariantEntropyObserved residual-40~-60 dB band>-60 dB support1Initial full modelsStage 1 Scalar-81.80660.56693.0991%3.2150%2Initial full modelsStage 2 CNN2.71140.300568.8995%69.5938%3Initial full modelsStage 3 Transformer3.52130.212675.0259%76.4267%4Zero-preserving support fusionCNN bg=.053.25160.385057.1579%57.9147%5Zero-preserving support fusionCNN bg=.203.12430.392650.1343%50.8698%6Zero-preserving support fusionTransformer bg=.053.43490.316036.9492%37.7045%7Zero-preserving support fusionTransformer bg=.202.67020.45430.0946%0.2792%8Stage-1 guide + firm supportCNN bg=.053.39010.24220.5814%1.0376%9Stage-1 guide + firm supportCNN bg=.203.27490.25920.5173%0.9033%10Stage-1 guide + firm supportTransformer bg=.053.53560.23070.5203%1.0254%11Stage-1 guide + firm supportTransformer bg=.203.39090.25070.4593%0.8957%12Deep scalar unfoldingScalar-123.56640.343480.4092%82.0038%13Deep scalar unfoldingScalar-163.85160.312284.4772%86.4716%14Deep scalar unfoldingScalar-243.80780.335284.9976%86.7142%15Deep scalar unfoldingScalar-323.53750.304883.5526%85.2005%16Balanced scalar echo sweepEcho weight=.152.08840.59633.5233%3.5614%17Balanced scalar echo sweepEcho weight=.252.34600.520819.8563%20.0500%18Balanced scalar echo sweepEcho weight=.352.77900.409243.6493%44.1010%19Balanced scalar echo sweepEcho weight=.453.09240.371655.0995%56.0715%20Noise-aware clean echoCNN clean=.11.28170.72130.0061%0.0259%21Noise-aware clean echoCNN clean=.51.27300.72340.0107%0.0275%22Noise-aware clean echoTransformer clean=.11.95470.61510.0046%0.0320%23Noise-aware clean echoTransformer clean=.51.77370.66470.0015%0.0198%24Structured aircraft v1CNN p=.502.21120.57120.0031%0.0397%25Structured aircraft v1Transformer p=.252.44470.53200.0015%0.0565%26Structured aircraft v1Transformer p=.502.30190.57480.0000%0.0305%27Structured aircraft v1Transformer p=.752.53450.58060.0061%0.0473%28Dense-aircraft v2CNN p=.250.87780.93670.0015%0.0107%29Dense-aircraft v2CNN p=.500.60850.95420.0000%0.0153%30Dense-aircraft v2Transformer p=.251.14280.89770.0015%0.0107%31Dense-aircraft v2Transformer p=.500.87760.83850.0015%0.0137%
+
+24.2.1 Fast-ADMM-40 Yak seed 0 自检基线
+
+同一 prepare_measurements(seed=0)、同一 (512,128) reconstruction 和同一指标函数下：
+
+MethodEntropyObserved residual-40~-60 dB band pixelsBand energy>-40 dB support>-60 dB supportFast-ADMM-404.2769098830.1875038640.062561%0.008490%0.521851%0.584412%
+
+原始分数形式：
+
+1band_40_60_pixel_fraction = 0.0006256103515625
+2band_40_60_energy_fraction = 0.00008489965712720762
+3support_above_40_fraction = 0.005218505859375
+4support_above_60_fraction = 0.0058441162109375
+
+这是传统 solver、Yak 预处理、A/A_H、fftshift-independent metric 和 dB epsilon 的联合自检锚点。如果实现后的数值明显偏离，应先排查 Yak IFFT、FFT normalization、返回 X/Z 状态和 noise seed。
+
+24.3 如何从表中复现八张图的结论
+
+1Group 01：CNN/Transformer 降低 observed residual，但 Yak 底噪扩大到 69%–76%。
+2Group 02：zero-preserving 有效但不稳定，可能仍稠密，也可能过度稀疏。
+3Group 03：Stage 1 guide 把 band 降到约 0.5%，但 support 低于 Stage 1。
+4Group 04：深层 scalar + echo=.5 导致 80% 以上底噪。
+5Group 05：echo weight 从 .15 到 .45 时，底噪单调增加。
+6Group 06：clean echo loss 在 synthetic 上成功，但 Yak 只剩强点。
+7Group 07：离散飞机轮廓没有解决真实弱结构迁移。
+8Group 08：连续 dense target 仍没有解决 Yak domain gap。
+
+25. Scalar 模型 learned schedule
+
+这一节给出可以直接用于高保真重建的 c_k, tau_k, beta_k。如果只想重建网络结构，可以仍按默认值初始化并重新训练；如果想复现已经训练出的 scalar forward，可将这些数值写入模型的正参数，或用 inverse-softplus 转回 raw 参数。
+
+25.1 Stage 1 Scalar-8
+
+1c,tau,beta
+21.873559474945068359e+00,4.546716213226318359e-01,2.647681474685668945e+00
+31.257584452629089355e+00,7.583687901496887207e-01,2.298037528991699219e+00
+41.352463364601135254e+00,4.392403662204742432e-01,9.375020861625671387e-01
+59.621740579605102539e-01,1.293781518936157227e+00,2.419186115264892578e+00
+61.478845834732055664e+00,1.328504800796508789e+00,1.000298023223876953e+00
+75.421202778816223145e-01,7.498135566711425781e-01,2.187135457992553711e+00
+82.752486765384674072e-01,4.562605544924736023e-02,1.330943346023559570e+00
+93.500076830387115479e-01,6.499999202787876129e-03,1.000000000000000000e+00
+
+25.2 Deep Scalar-12
+
+1c,tau,beta
+22.007097482681274414e+00,3.649644926190376282e-02,2.351718902587890625e+00
+31.698411941528320312e+00,5.297859758138656616e-02,1.426344990730285645e+00
+41.099492549896240234e+00,1.283299028873443604e-01,3.650275945663452148e+00
+51.972266077995300293e+00,1.181549951434135437e-01,3.600584864616394043e-01
+62.820225358009338379e-01,2.700971662998199463e-01,2.187810987234115601e-01
+79.905056357383728027e-01,3.286864757537841797e-01,1.049782261252403259e-01
+85.825370550155639648e-01,1.977517902851104736e-01,1.852248907089233398e-01
+94.395959079265594482e-01,1.358432769775390625e-01,3.111128509044647217e-01
+102.841705977916717529e-01,7.533426582813262939e-02,9.880691766738891602e-01
+112.744629979133605957e-01,6.426677107810974121e-02,1.045930504798889160e+00
+122.891453206539154053e-01,2.457640133798122406e-02,2.159383058547973633e+00
+134.088218808174133301e-01,6.499999202787876129e-03,1.000000000000000000e+00
+
+25.3 Deep Scalar-16
+
+1c,tau,beta
+22.183789730072021484e+00,4.866375774145126343e-02,1.909734368324279785e+00
+31.747515201568603516e+00,3.632616996765136719e-02,1.138947010040283203e+00
+48.606690764427185059e-01,5.354681983590126038e-02,1.924917936325073242e+00
+51.603304147720336914e+00,7.483761757612228394e-02,2.108399868011474609e+00
+61.123093128204345703e+00,1.667383313179016113e-01,7.039391994476318359e-01
+71.177884817123413086e+00,1.665839850902557373e-01,2.765788435935974121e-01
+81.184191346168518066e+00,3.053698539733886719e-01,1.832431405782699585e-01
+91.143089652061462402e+00,2.473286390304565430e-01,1.475704461336135864e-01
+108.763812780380249023e-01,1.536229848861694336e-01,4.562312737107276917e-02
+115.353581309318542480e-01,1.129284575581550598e-01,8.981116861104965210e-02
+123.691074550151824951e-01,8.900146931409835815e-02,1.757511794567108154e-01
+132.856467664241790771e-01,7.849425077438354492e-02,4.125863611698150635e-01
+142.186340540647506714e-01,3.895147517323493958e-02,7.753629088401794434e-01
+152.217175513505935669e-01,4.844054579734802246e-02,1.045830845832824707e+00
+162.594450116157531738e-01,1.851427927613258362e-02,2.035958766937255859e+00
+174.018348157405853271e-01,6.499999202787876129e-03,1.000000000000000000e+00
+
+25.4 Deep Scalar-24
+
+1c,tau,beta
+22.168838262557983398e+00,5.052312836050987244e-02,1.954808115959167480e+00
+31.182226300239562988e+00,3.877860680222511292e-02,1.700122594833374023e+00
+41.156461000442504883e+00,7.946701347827911377e-02,2.860154628753662109e+00
+52.373568058013916016e+00,7.492843270301818848e-02,4.885351657867431641e-01
+64.956659376621246338e-01,1.063375324010848999e-01,2.240822911262512207e-01
+75.988253951072692871e-01,1.531863808631896973e-01,9.632617831230163574e-01
+88.432624340057373047e-01,1.370960474014282227e-01,2.309436351060867310e-02
+96.661245822906494141e-01,1.606815159320831299e-01,1.476942561566829681e-02
+107.060348391532897949e-01,1.431858539581298828e-01,1.299120858311653137e-02
+111.338873863220214844e+00,1.090493425726890564e-01,2.595996484160423279e-02
+129.635726213455200195e-01,1.672564446926116943e-01,1.616254448890686035e-02
+138.473349213600158691e-01,1.614724099636077881e-01,1.922553777694702148e-02
+141.393842816352844238e+00,8.656836301088333130e-02,4.334772005677223206e-02
+151.185037970542907715e+00,1.053499728441238403e-01,7.268320024013519287e-02
+166.761888265609741211e-01,1.008968055248260498e-01,7.162474095821380615e-02
+173.794740140438079834e-01,8.376513421535491943e-02,1.155275702476501465e-01
+182.505008876323699951e-01,7.157763838768005371e-02,1.628156453371047974e-01
+192.025606632232666016e-01,6.206673011183738708e-02,2.275646328926086426e-01
+201.810954660177230835e-01,5.397171899676322937e-02,2.368567436933517456e-01
+212.619747221469879150e-01,5.728064104914665222e-02,9.995010495185852051e-01
+222.345667183399200439e-01,2.068075910210609436e-02,2.157659053802490234e+00
+231.800332367420196533e-01,8.513756096363067627e-03,2.185699224472045898e+00
+242.365412116050720215e-01,1.454120967537164688e-02,2.279846191406250000e+00
+254.068689942359924316e-01,6.499999202787876129e-03,1.000000000000000000e+00
+
+25.5 Deep Scalar-32
+
+1c,tau,beta
+22.552343606948852539e+00,8.162666857242584229e-02,2.125405550003051758e+00
+39.646872282028198242e-01,2.585846558213233948e-02,1.517230749130249023e+00
+41.104536175727844238e+00,4.453029856085777283e-02,1.977498054504394531e+00
+51.231778144836425781e+00,1.061398386955261230e-01,1.035979747772216797e+00
+68.163831830024719238e-01,8.036763966083526611e-02,2.067701146006584167e-02
+77.582501173019409180e-01,9.879128634929656982e-02,6.084504351019859314e-02
+87.347593307495117188e-01,1.062144115567207336e-01,9.194931387901306152e-02
+98.791925311088562012e-01,9.298447519540786743e-02,6.291273981332778931e-02
+109.093239307403564453e-01,8.850988000631332397e-02,3.366260603070259094e-02
+117.600665688514709473e-01,1.165365874767303467e-01,1.541171222925186157e-02
+125.863525867462158203e-01,1.450433582067489624e-01,1.669920422136783600e-02
+135.798015594482421875e-01,1.197023987770080566e-01,1.856221631169319153e-02
+145.983944535255432129e-01,1.058438792824745178e-01,1.753424294292926788e-02
+156.138110160827636719e-01,1.004816293716430664e-01,1.613425835967063904e-02
+166.371778845787048340e-01,1.014164388179779053e-01,1.528476178646087646e-02
+177.055458426475524902e-01,1.094218865036964417e-01,1.643355377018451691e-02
+189.058210849761962891e-01,7.788843661546707153e-02,2.667210809886455536e-02
+191.004498004913330078e+00,7.584641873836517334e-02,2.279702201485633850e-02
+206.662918925285339355e-01,1.431357711553573608e-01,4.006237536668777466e-02
+218.556236028671264648e-01,1.065208539366722107e-01,1.128931194543838501e-01
+228.723416328430175781e-01,8.684638142585754395e-02,1.094708964228630066e-01
+235.150264501571655273e-01,5.705319717526435852e-02,1.039560735225677490e-01
+243.037749528884887695e-01,5.311556905508041382e-02,9.125637263059616089e-02
+252.227307558059692383e-01,4.847092553973197937e-02,1.157906576991081238e-01
+261.958758682012557983e-01,4.262658208608627319e-02,1.767479181289672852e-01
+271.799976527690887451e-01,3.935381397604942322e-02,1.794669926166534424e-01
+281.863344013690948486e-01,3.547929972410202026e-02,2.660406827926635742e-01
+292.192106097936630249e-01,5.801468342542648315e-02,8.041298389434814453e-01
+302.142315357923507690e-01,1.785617321729660034e-02,2.142366647720336914e+00
+311.781928688287734985e-01,9.073172695934772491e-03,2.102274894714355469e+00
+322.217965424060821533e-01,1.433836854994297028e-02,2.131192922592163086e+00
+333.998206257820129395e-01,6.499999202787876129e-03,1.000000000000000000e+00
+
+25.6 Balanced Scalar echo=.15
+
+1c,tau,beta
+22.816720247268676758e+00,3.581250831484794617e-02,1.070513129234313965e+00
+31.404360413551330566e+00,5.006125941872596741e-02,1.925618529319763184e+00
+41.042460441589355469e+00,1.222591176629066467e-01,3.024977684020996094e+00
+51.268912553787231445e+00,2.762449979782104492e-01,3.282814323902130127e-01
+61.105369329452514648e+00,2.601631581783294678e-01,1.071111783385276794e-01
+76.612474918365478516e-01,2.552725672721862793e-01,8.789727836847305298e-02
+84.733583033084869385e-01,1.601027995347976685e-01,1.722514033317565918e-01
+93.885886073112487793e-01,9.842570871114730835e-02,2.405114620923995972e-01
+103.127553462982177734e-01,1.232752352952957153e-01,9.857462644577026367e-01
+112.626769542694091797e-01,3.826726973056793213e-02,1.406265974044799805e+00
+122.266765534877777100e-01,1.538886036723852158e-02,7.340178489685058594e-01
+132.743349671363830566e-01,6.499999202787876129e-03,1.000000000000000000e+00
+
+25.7 Balanced Scalar echo=.25
+
+1c,tau,beta
+22.776355504989624023e+00,3.346476703882217407e-02,1.283639430999755859e+00
+31.494438409805297852e+00,5.678072199225425720e-02,1.877889275550842285e+00
+41.073299765586853027e+00,1.072955429553985596e-01,3.385074615478515625e+00
+51.149348020553588867e+00,2.288843244314193726e-01,3.560826480388641357e-01
+61.044961333274841309e+00,2.415677160024642944e-01,9.676061570644378662e-02
+76.923919916152954102e-01,2.352579683065414429e-01,8.849406987428665161e-02
+84.987419545650482178e-01,1.483707278966903687e-01,1.681522130966186523e-01
+94.036110043525695801e-01,9.213966131210327148e-02,2.437469959259033203e-01
+103.370027840137481689e-01,1.146310716867446899e-01,1.003036260604858398e+00
+112.754779160022735596e-01,3.824279829859733582e-02,1.505611896514892578e+00
+122.382585108280181885e-01,1.530320197343826294e-02,7.843279242515563965e-01
+133.043813407421112061e-01,6.499999202787876129e-03,1.000000000000000000e+00
+
+25.8 Balanced Scalar echo=.35
+
+1c,tau,beta
+22.615731239318847656e+00,3.395569324493408203e-02,1.411505460739135742e+00
+31.574780941009521484e+00,6.341136991977691650e-02,1.808254718780517578e+00
+41.053268194198608398e+00,1.025573536753654480e-01,3.910290956497192383e+00
+51.243364214897155762e+00,1.141864284873008728e-01,3.276376128196716309e-01
+66.632738709449768066e-01,2.272322326898574829e-01,1.566075682640075684e-01
+77.163539528846740723e-01,1.762447655200958252e-01,1.380616575479507446e-01
+85.302285552024841309e-01,1.163597851991653442e-01,1.796028316020965576e-01
+94.253355860710144043e-01,7.713774591684341431e-02,2.378747314214706421e-01
+103.923217058181762695e-01,8.450277149677276611e-02,1.017119646072387695e+00
+113.007057905197143555e-01,3.466057404875755310e-02,1.572275042533874512e+00
+122.630530893802642822e-01,1.513793505728244781e-02,7.253347635269165039e-01
+133.604222536087036133e-01,6.499999202787876129e-03,1.000000000000000000e+00
+
+25.9 Balanced Scalar echo=.45
+
+1c,tau,beta
+21.425258994102478027e+00,2.992204762995243073e-02,2.429130554199218750e+00
+31.000450253486633301e+00,5.480906367301940918e-02,2.173794746398925781e+00
+41.222599625587463379e+00,1.141245290637016296e-01,3.403265953063964844e+00
+51.179532051086425781e+00,9.045860916376113892e-02,2.792113721370697021e-01
+64.472404718399047852e-01,1.968208402395248413e-01,1.417058259248733521e-01
+76.325118541717529297e-01,1.777132451534271240e-01,1.304633319377899170e-01
+84.405862689018249512e-01,1.277747005224227905e-01,1.822759658098220825e-01
+93.719843327999114990e-01,8.257378637790679932e-02,2.724813520908355713e-01
+103.647611439228057861e-01,8.248440176248550415e-02,1.008769631385803223e+00
+112.980695068836212158e-01,3.462140634655952454e-02,1.640993595123291016e+00
+122.764033377170562744e-01,1.468880847096443176e-02,7.829567193984985352e-01
+133.855118453502655029e-01,6.499999202787876129e-03,1.000000000000000000e+00
+
+26. Round 32–36 与全部 36 轮统一索引
+
+Round 32–36 不在旧 all_complete_trainings 八张图片中，它们是后续五个独立方案。历史八组加五个新方案，按主要方案组计算共 13 组；按完整训练任务计算共 36 轮。
+
+Round新方案Point imagePoint clean echoDense imageDense clean echoYak band seed0–9 meanYak support seed0–9 meanParamsLatency*32round32_guide_dc0.0068980.0065640.1716320.0391100.8200%1.5981%19,7186.162 ms33round33_confidence_band0.0042840.0040560.2315720.0653530.9875%1.5318%19,71442.078 ms34round34_stage1_residual0.0123400.0173010.3982290.08733731.7529%32.2110%30,14989.109 ms35round35_support_physics0.0012790.0011260.6903580.3258990.1025%0.2556%19,72089.012 ms36round36_support_distill0.0063090.0059290.1863500.0669851.0870%1.5651%19,7145.666 ms
+
+Latency* 来自固定评测所在设备；不同轮次可能受到并发和测量环境影响，不能把 Round 33–35 的较大数字直接解释为结构必然慢十倍。论文最终速度应在同一空闲 GPU、相同 warmup/repeats 下重测。
+
+26.1 36 轮网络族映射
+
+1R1 PhysicsUnrolledADMM, scalar-8
+2R2 PhysicsUnrolledADMM + shared CNN proximal
+3R3 PhysicsUnrolledADMM + shared Transformer proximal
+4R4–R7 SupportFusionADMM
+5R8–R11 GuideSupportFusionADMM
+6R12–R15 scalar-only unfolding, depth sweep
+7R16–R19 12-layer scalar-only, observed echo loss sweep
+8R20–R23 SupportFusionADMM + noise-aware clean echo
+9R24–R27 SupportFusionADMM + StructuredAircraft v1 data
+10R28–R31 SupportFusionADMM + DenseAircraft v2 data
+11R32 GuideSupportFusionADMM + 8 masked DC steps
+12R33 Guide + three-band confidence + 4 DC steps
+13R34 Stage 1 guide + residual CNN
+14R35 Stage 1 support + 8 explicit physics steps
+15R36 Round 33 architecture + dense-heavy mixed training
+
+27. 另一个对话必须生成的文件和接口
+
+为了复刻全部 36 轮，建议另一个对话至少创建：
+
+1admm_unrolled.py
+2 complex_from_channels
+3 complex_to_channels
+4 fast_forward_operator
+5 fast_adjoint_operator
+6 complex_soft_threshold
+7 ComplexResidualProx
+8 TransformerProx
+9 PhysicsUnrolledADMM
+10
+11admm_support_fusion.py
+12 support_gate
+13 SupportGatedCNNProx
+14 SupportGatedTransformerProx
+15 SupportFusionADMM
+16
+17admm_guide_support_fusion.py
+18 firm_support
+19 GuideSupportFusionADMM
+20
+21admm_deep_scalar.py
+22 DeepScalarADMM
+23
+24admm_rounds32_36.py
+25 Round32GuideDC
+26 Round33ConfidenceBand
+27 Round34Stage1Residual
+28 Round35SupportPhysics
+29 Round36SupportDistill
+30
+31synthetic_isar_dataset.py
+32structured_isar_dataset.py
+33dense_aircraft_isar_dataset.py
+34
+35yak42_admm_demo.py
+36 load_yak42
+37 prepare_measurements
+38
+39admm_2d.py
+40 admm_2d_fast
+41 image_entropy
+42
+43train_admm_unrolled.py
+44train_support_fusion.py
+45train_guide_support_fusion.py
+46train_balanced_scalar.py
+47train_noise_aware_support.py
+48train_structured_noiseaware.py
+49train_dense_aircraft_noiseaware.py
+50train_rounds32_36.py
+51
+52evaluate_structured_generalization.py
+53evaluate_rounds32_36.py
+54evaluate_reconstruction.py
+55generate_training_round_visualizations.py
+56generate_all_complete_training_visualizations.py
+57generate_paper_visualizations.py
+
+其中最小 36 轮复刻的必要统一图脚本是 generate_all_complete_training_visualizations.py 和 Round 32–36 evaluator。以下两个脚本属于可选历史辅助，不是网络/结果复刻的硬依赖：
+
+1evaluate_posthoc_xz_fusion.py
+2 冻结旧 checkpoint 后搜索 threshold_db × gamma 的 X/Z 后处理网格；
+3 是 SupportFusion 设计前奏，不产生新的完整训练轮。
+4
+5generate_paper_visualizations.py
+6 生成 Stage 1/2/3 paper-style synthetic/Yak 对比；
+7 同时输出 [-40,0] 与 [-60,0] dB Yak 图，是显示窗口讨论的来源之一。
+
+如果目标是“仓库功能全覆盖”可以实现它们；如果目标只是复刻 36 轮网络、训练和正式结果，可以排除。
+
+27.1 最低单元测试
+
+11. complex round-trip 保持数值和形状。
+22. A(X) 输出 [B,256,64]，Aᴴ(S) 输出 [B,512,128]。
+33. soft-threshold(0)=0，且不改变非零复数相位。
+44. Stage 1 参数量=24。
+55. Stage 2 参数量=19,707。
+66. Stage 3 参数量=346,683。
+77. Support CNN 参数量=19,711。
+88. Support Transformer 参数量=346,687。
+99. Guide CNN 参数量=19,712。
+1010. Round 32 参数量=19,718。
+1111. 所有模型输入 [1,2,256,64]，输出 [1,2,512,128]。
+1212. support_gate(0)=0。
+1313. firm support 在 low 以下严格为 0，在 high 以上为 1。
+1414. Round 33 在 db<=-60 时 confidence=0，在 db>=-40 时为1。
+1515. DDP 对存在 unused guide 参数的模型启用 find_unused_parameters=True。
+1616. FFT adjoint 内积恒等式：`<A(x),y> == <x,A_H(y)>`，complex64 使用 `rtol=2e-5, atol=2e-5`。
+1717. 零 measurement 稳定性：scalar network 输出严格全零；Fast-ADMM 在第 1 次迭代收敛、无 NaN、entropy=0。
+1818. 在小尺寸 normalized DFT dictionary 上，`admm_2d_fast` 与显式 `admm_2d` 的 image 以 `rtol=1e-11, atol=1e-12` 一致，iterations/converged 也完全一致。
+
+第 16 项比只检查 shape 更关键，因为 forward 和 adjoint 即使形状正确，也可能因 FFT sign、axis、裁剪或归一化写错而不互为伴随。第 18 项则同时验证 NumPy fast solver 与显式矩阵公式的一致性。
+
+27.2 结果复现验收
+
+没有 CNN/Transformer checkpoint 时，不要求数字逐点相同，但重新训练后应复现以下定性趋势：
+
+1Stage 1：Yak 结构最平衡。
+2Stage 2/3：observed residual 低但底噪密集。
+3Guide：底噪干净但 support 偏小。
+4Deep scalar：层数增加不能修复 noisy echo overfit。
+5Balanced sweep：echo weight 越大，底噪越多。
+6Noise-aware：synthetic clean echo 很好，Yak 过稀疏。
+7Structured/Dense：仅改 synthetic 形状不能消除 domain gap。
+8Round 32：在后续五轮中结构/背景综合最佳。
+9Round 34：residual CNN 底噪泄漏。
+10Round 35：point-only 极佳但 Yak 过稀疏。
+
+28. Round 1–36 统一完整配置矩阵
+
+这一节是全部实验的单表索引。它的用途不是替代前面的公式，而是让另一个对话能够从一个 Round 编号反查到：模型类、数据域、网络规模、loss、batch、GPU、selector、运行目录和图中实际加载的 checkpoint。
+
+28.1 缩写
+
+1P = point-only SyntheticISARDataset
+2S(p) = point/StructuredAircraft-v1 混合，structured_probability=p
+3D(p) = point/DenseAircraft-v2 混合，structured_probability=p
+4Eobs = noisy observed echo NMSE
+5Eclean = clean target echo NMSE
+6Disc = noise-energy discrepancy
+7Bg-E = background normalized L2 energy
+8Bg-L1L2 = background normalized L2 energy + normalized L1 magnitude
+9Sup = protected-support minimum-energy hinge loss
+10
+11Last = checkpoint-last.pt
+12Best = checkpoint-best.pt
+13Score = checkpoint-best-score.pt
+14Constrained = checkpoint-best-constrained.pt
+15R32Best = checkpoint-best.pt selected by val_total + 0.5*val_background
+
+共同优化器除特别注明外为：
+
+1AdamW(lr=1e-3, weight_decay=1e-5)
+2gradient norm clip = 10
+3CUDA autocast dtype = bfloat16
+4DDP train sampler，validation/test 不分片，只在 rank 0 评测
+
+28.2 36 轮单表
+
+R实际模型层/近端数据Train/Val/TestEpochBatch×GPULoss 权重Selector/图中 checkpoint相对运行目录1PhysicsUnrolledADMM8 / noneP20000/1000/10001002×8I=1,Eobs=.1,sparse=1e-4Lastruns/admm_stage1_full_8gpu2PhysicsUnrolledADMM8 / shared CNN-32-depth3P20000/1000/10001002×8I=1,Eobs=.5,sparse=1e-4Bestruns/admm_stage2_cnnprox83PhysicsUnrolledADMM8 / shared Transformer-96-depth2-head4-patch8P20000/1000/10001001×8I=1,Eobs=.5,sparse=1e-4Bestruns/admm_stage3_transformer84SupportFusionADMM8 / CNNP4000/500/500202×4I=1,Eobs=.5,Bg-E=.05Constrainedruns/admm_stage2b_pilot_bg0055SupportFusionADMM8 / CNNP4000/500/500202×4I=1,Eobs=.5,Bg-E=.20Constrainedruns/admm_stage2b_pilot_bg0206SupportFusionADMM8 / TransformerP4000/500/500201×4I=1,Eobs=.5,Bg-E=.05Constrainedruns/admm_stage3b_pilot_bg0057SupportFusionADMM8 / TransformerP4000/500/500201×4I=1,Eobs=.5,Bg-E=.20Scoreruns/admm_stage3b_pilot_bg0208GuideSupportFusionADMM8 / CNN / DC2P4000/500/500202×4I=1,Eobs=.5,Bg-L1L2=.05Scoreruns/admm_stage2c_guide_pilot_bg0059GuideSupportFusionADMM8 / CNN / DC2P4000/500/500202×4I=1,Eobs=.5,Bg-L1L2=.20Scoreruns/admm_stage2c_guide_pilot_bg02010GuideSupportFusionADMM8 / Transformer / DC2P4000/500/500201×4I=1,Eobs=.5,Bg-L1L2=.05Scoreruns/admm_stage3c_guide_pilot_bg00511GuideSupportFusionADMM8 / Transformer / DC2P4000/500/500201×4I=1,Eobs=.5,Bg-L1L2=.20Scoreruns/admm_stage3c_guide_pilot_bg02012PhysicsUnrolledADMM / scalar equivalent12 / noneP4000/500/500202×4I=1,Eobs=.5,sparse=1e-4Bestruns/admm_stage1b_scalar12_pilot13同上16 / noneP4000/500/500202×4I=1,Eobs=.5,sparse=1e-4Bestruns/admm_stage1b_scalar16_pilot14同上24 / noneP4000/500/500202×4I=1,Eobs=.5,sparse=1e-4Bestruns/admm_stage1b_scalar24_pilot15同上32 / noneP4000/500/500202×4I=1,Eobs=.5,sparse=1e-4Bestruns/admm_stage1b_scalar32_pilot16DeepScalarADMM12 / noneP4000/500/500202×4I=1,Eobs=.15,Bg-L1L2=.1Scoreruns/admm_stage1c_balanced_echo0p1517DeepScalarADMM12 / noneP4000/500/500202×4I=1,Eobs=.25,Bg-L1L2=.1Scoreruns/admm_stage1c_balanced_echo0p2518DeepScalarADMM12 / noneP4000/500/500202×4I=1,Eobs=.35,Bg-L1L2=.1Scoreruns/admm_stage1c_balanced_echo0p3519DeepScalarADMM12 / noneP4000/500/500202×4I=1,Eobs=.45,Bg-L1L2=.1Scoreruns/admm_stage1c_balanced_echo0p4520SupportFusionADMM8 / CNNP4000/500/500202×4I=1,Eclean=.1,Disc=.1,Bg-L1L2=.1Constrainedruns/admm_noiseaware_cnn_clean0p121SupportFusionADMM8 / CNNP4000/500/500202×4I=1,Eclean=.5,Disc=.1,Bg-L1L2=.1Constrainedruns/admm_noiseaware_cnn_clean0p522SupportFusionADMM8 / TransformerP4000/500/500201×4I=1,Eclean=.1,Disc=.1,Bg-L1L2=.1Constrainedruns/admm_noiseaware_transformer_clean0p123SupportFusionADMM8 / TransformerP4000/500/500201×4I=1,Eclean=.5,Disc=.1,Bg-L1L2=.1Constrainedruns/admm_noiseaware_transformer_clean0p524SupportFusionADMM8 / CNNS(.50)4000/500/500202×4I=1,Eclean=.1,Disc=.1,Bg-L1L2=.1Scoreruns/admm_structured_cnn_p0p525SupportFusionADMM8 / TransformerS(.25)4000/500/500201×4同 R24Scoreruns/admm_structured_transformer_p0p2526SupportFusionADMM8 / TransformerS(.50)4000/500/500201×4同 R24Scoreruns/admm_structured_transformer_p0p527SupportFusionADMM8 / TransformerS(.75)4000/500/500201×4同 R24Scoreruns/admm_structured_transformer_p0p7528SupportFusionADMM8 / CNND(.25)4000/500/500202×4I=1,Eclean=.1,Disc=.1,Bg-L1L2=.1Scoreruns/admm_dense_aircraft_cnn_p0p2529SupportFusionADMM8 / CNND(.50)4000/500/500202×4同 R28Scoreruns/admm_dense_aircraft_cnn_p0p530SupportFusionADMM8 / TransformerD(.25)4000/500/500201×4同 R28Scoreruns/admm_dense_aircraft_transformer_p0p2531SupportFusionADMM8 / TransformerD(.50)4000/500/500201×4同 R28Scoreruns/admm_dense_aircraft_transformer_p0p532Round32GuideDCguide+CNN / DC8D(.50)4000/500/500202×4I=1,Eclean=.5,Disc=.1,Bg-L1L2=.2R32Bestruns/admm_round32_guide_dc33Round33ConfidenceBandguide+CNN / confidence / DC4D(.50)4000/500/500202×4R32 loss + Sup=.1R32Bestruns/admm_round33_confidence_band34Round34Stage1Residualguide + residual CNND(.50)4000/500/500202×4同 R32，无 SupR32Bestruns/admm_round34_stage1_residual35Round35SupportPhysicsguide mask + physics DC8D(.50)4000/500/500202×4同 R32，无 SupR32Bestruns/admm_round35_support_physics36Round36SupportDistillR33 architectureD(.75)4000/500/500202×4R32 loss + Sup=.1R32Bestruns/admm_round36_support_distill
+
+这里的 D(p) 在代码参数名中仍叫 structured_probability，但实际 dataset=mixed 时实例化的是 DenseAircraftISARDataset。因此 Round 32–36 的 p 是 dense 样本概率，不是 Structured-v1 概率。这个命名遗留必须保留或显式重命名并保持行为相同。
+
+Round 28–31 的明确映射是：Round 28=CNN p=.25，Round 29=CNN p=.50，Round 30=Transformer p=.25，Round 31=Transformer p=.50。
+
+28.2.1 R24–31 与 R32–36 的概率注入机制不同
+
+R24–27 和 R28–31 的底层 train_support_fusion.py argparse 没有 --structured-probability 参数。概率由 shell 环境变量注入：
+
+1STRUCTURED_PROB
+
+包装训练器在 import 后 monkey-patch base trainer：
+
+1# R24–27
+2base.SyntheticISARDataset = dataset_factory
+3
+4def dataset_factory(*args, **kwargs):
+5 return StructuredISARDataset(
+6 *args, **kwargs,
+7 structured_probability=float(os.environ.get("STRUCTURED_PROB", "0.5")),
+8 )
+9
+10# R28–31 同理，但替换为 DenseAircraftISARDataset
+
+同时还替换：
+
+1base.SupportFusionADMM = SupportFusionADMM
+2base.compute_loss = noise_aware_compute_loss
+
+run wrapper 要求 STRUCTURED_PROB 已存在，并执行 export STRUCTURED_PROB，然后调用包装器；这个概率不会出现在 base argparse namespace 中。重写为统一 registry 时可以改成显式 config，但若复刻历史 shell/API 行为，必须保留 env→factory 的链。
+
+R32–36 不再 monkey-patch dataset factory，而是正式 CLI：
+
+1--dataset mixed
+2--structured-probability 0.50 或 0.75
+
+trainer 自己根据 dataset 构造 DenseAircraftISARDataset。两代都沿用 structured_probability 这个名字，但 R28–36 的实际含义是 dense probability。
+
+28.3 Round 32–36 的实际启动参数
+
+五轮不是使用默认 seed 0，而是统一使用：
+
+1seed = 3200
+2train seed = 3200
+3validation seed = 1,003,200
+4test seed = 2,003,200
+5image_shape = (512,128)
+6measurement_shape = (256,64)
+7train/val/test = 4000/500/500
+8epochs = 20
+9batch_size_per_rank = 2
+10world_size = 4
+11optimizer = AdamW(lr=0.001, weight_decay=1e-5)
+12AMP = bfloat16
+13grad clip = 10
+14num_workers(train/val/test) = 2/1/1
+15pin_memory(train) = True on CUDA
+
+逐轮唯一的任务参数：
+
+1Round 32: variant=round32_guide_dc, dataset=mixed, p=0.50
+2Round 33: variant=round33_confidence_band, dataset=mixed, p=0.50
+3Round 34: variant=round34_stage1_residual, dataset=mixed, p=0.50
+4Round 35: variant=round35_support_physics, dataset=mixed, p=0.50
+5Round 36: variant=round36_support_distill, dataset=mixed, p=0.75
+
+每个任务的冻结 teacher 都从 Stage 1 的 checkpoint-last.pt 加载。对外复刻时应通过命令行参数或环境变量传入 checkpoint，不要把某台服务器的绝对路径写死。
+
+29. 八张图片、31 个 panel 与 checkpoint 的精确对应
+
+29.1 分组图索引
+
+图片Panel 数Round方案变量group_01_initial_full_models_seed0_60db.png31–3scalar / CNN / Transformer 基础网络group_02_zero-preserving_support_fusion_seed0_60db.png44–7proximal 类型 × background weightgroup_03_stage-1_guide_plus_firm_support_seed0_60db.png48–11proximal 类型 × background weightgroup_04_deep_scalar_unfolding_seed0_60db.png412–15scalar unfolding 深度 12/16/24/32group_05_balanced_scalar_echo_sweep_seed0_60db.png416–19observed echo weight .15/.25/.35/.45group_06_noise-aware_clean_echo_seed0_60db.png420–23proximal 类型 × clean echo weightgroup_07_structured_aircraft_v1_seed0_60db.png424–27Structured-v1 混合概率与 proximalgroup_08_dense-aircraft_v2_seed0_60db.png428–31Dense-v2 混合概率与 proximal
+
+主总览：
+
+1all_31_complete_trainings_yak42_seed0_60db.png
+2布局 = 4 rows × 8 columns
+3有效 panel = 前 31 个，最后 1 个 axis 关闭
+4panel 顺序 = row-major，严格 R1 → R31
+
+Round 32–36 的单独可视化名称统一为：
+
+1runs/admm_round32_guide_dc/figures/yak42_seed0_full.png
+2runs/admm_round33_confidence_band/figures/yak42_seed0_full.png
+3runs/admm_round34_stage1_residual/figures/yak42_seed0_full.png
+4runs/admm_round35_support_physics/figures/yak42_seed0_full.png
+5runs/admm_round36_support_distill/figures/yak42_seed0_full.png
+
+29.2 可视化输入和显示方式
+
+所有旧 31 轮 group 图必须满足：
+
+1Yak file = Yak42.mat
+2measurement seed = 0
+3model input = [1,2,256,64]
+4model complex output = [512,128]
+5normalization = magnitude / max(magnitude)
+6dB = 20*log10(normalized_magnitude + epsilon)
+7colormap = viridis
+8vmin/vmax = -60/0 dB
+9origin = lower
+10aspect = auto
+11extent = (-50,50,-48,48)
+12shown xlim/ylim = (-40,40),(-35,35)
+
+每个 panel 标题中的三项是：
+
+1H = normalized image entropy
+2band = 像素 dB 满足 -60 <= dB < -40 的比例
+3support = 像素 dB >= -60 的比例
+
+observed residual 不显示在 panel 标题中，但保存在 JSON；它按 NMSE(A(X_pred), S_observed) 计算。
+
+29.3 为什么同一网络可能在两张图里“看起来差很多”
+
+复刻时必须同时固定以下因素，否则不能认为是同一结果：
+
+dB 窗口；[-40,0] 会隐藏大量 -40~-60 dB 底噪，[-60,0] 会暴露它。
+
+checkpoint；last、best-image、best-score、best-constrained 可能视觉差异很大。
+
+Yak seed 和噪声 realization；历史总览固定 seed 0。
+
+是否对输出再次裁剪、threshold 或按 support mask 后处理。
+
+FFT shift、axis 顺序、origin 和 extent。
+
+是否对每张图独立按峰值归一化。
+
+因此，判断“Stage 1 比 Stage 2/3 背景干净”时，应使用同一个 [-60,0] dB、同一 seed、同一 peak normalization；按这一口径，R1 band=3.0991%，R2=68.8995%，R3=75.0259%。
+
+30. Round 32–36 可直接照写的训练 loss 与 selector
+
+30.1 张量定义
+
+1pred = complex_from_channels(pred_ch) # [B,512,128]
+2tgt = complex_from_channels(target_ch) # [B,512,128]
+3obs = complex_from_channels(measurement) # [B,256,64]
+4clean = A(tgt)
+5pred_echo = A(pred)
+
+批内 NMSE 采用“先逐样本空间求和，再对 batch 求均值”：
+
+1def nmse(a, b):
+2 per_sample = sum_hw(abs(a-b)**2) / clamp_min(sum_hw(abs(b)**2), 1e-8)
+3 return mean_batch(per_sample)
+
+30.2 五个基础项
+
+1image = NMSE(pred, tgt)
+2clean_echo = NMSE(pred_echo, clean)
+3observed_residual = NMSE(pred_echo, obs) # 只报告，不直接进入 total
+4
+5obs_energy = sum_hw(abs(obs)**2).clamp_min(1e-8)
+6true_noise_ratio = sum_hw(abs(obs-clean)**2) / obs_energy
+7predicted_noise_ratio = sum_hw(abs(pred_echo-obs)**2) / obs_energy
+8discrepancy = mean((predicted_noise_ratio - true_noise_ratio)**2)
+
+protected background mask：
+
+1support = (abs(tgt) > 1e-6).float()[:, None]
+2protected = max_pool2d(support, kernel_size=3, stride=1, padding=1)[:, 0]
+3bg = 1 - protected
+4target_energy = sum_hw(abs(tgt)**2).clamp_min(1e-8)
+5target_rms = sqrt(mean_hw(abs(tgt)**2)).clamp_min(1e-8)
+6background = mean_batch(sum_hw(abs(pred)**2 * bg) / target_energy) \
+7 + mean_batch(mean_hw(abs(pred) * bg) / target_rms)
+
+Round 33/36 的 support hinge：
+
+1support_energy = sum_hw(abs(pred)**2 * protected) / target_energy
+2support_loss = mean(relu(0.05 - support_energy))
+
+Round 32/34/35 令 support_loss=0。
+
+最终：
+
+1total = image \
+2 + 0.5 * clean_echo \
+3 + 0.1 * discrepancy \
+4 + 0.2 * background \
+5 + 0.1 * support_loss
+
+这里有一个重要历史现象：Round 33/36 的 support_loss 在最终测试表里为 0，表示预测的 protected-region energy 已越过 0.05 下限，hinge 不再提供梯度。Round 36 的 improvement 主要来自更高 dense 比例，而不是强 support distillation。
+
+30.3 Selector 精确实现
+
+每个 epoch 完成 rank-0 validation 后：
+
+1score = validation["total"] + 0.5 * validation["background"]
+2if score < best:
+3 save checkpoint-best.pt
+4always save checkpoint-last.pt
+
+训练结束必须重新加载 checkpoint-best.pt，再对 test set 计算 metrics.json。因此 Round 32–36 的表中 test 结果不是 last epoch 未选择权重。
+
+31. Round 32–36 forward 的逐行语义规范
+
+前面第 7 节给出了公式；本节补充容易写错的实现语义。
+
+31.1 Round 32
+
+1父类 = GuideSupportFusionADMM
+2learned proximal = CNN
+3num_layers = 8
+4guide = frozen Stage 1 scalar-8 schedule
+5dc_steps = 8
+6support_db_init = -55
+7support_width_db = 10
+8output_mix init = 0.5
+
+父类先计算 guide branch 和 learned branch，再用 firm support 融合，最后进行 8 次 masked data consistency。每个 DC step 有一个独立 raw scalar，正步长为 softplus(raw_step)。输出每一步后不做额外 soft-threshold。
+
+参数量 19,718 的组成关系：
+
+1Guide CNN baseline 19,712
+2DC step 从 2 增至 8，多 6 个 scalar
+3总计 19,718
+
+31.2 Round 33
+
+先分别运行冻结 guide 和 learned CNN ADMM branch。由 guide_image 的相对峰值 dB 构造 confidence。峰值同样逐样本计算：
+
+1peak = torch.amax(abs(guide_image), dim=(-2,-1), keepdim=True).clamp_min(1e-12)
+2db = 20*log10(abs(guide_image)/peak + 1e-12)
+3strong = 1(db >= -40)
+4weak = clamp((db + 60)/20, 0, 1)
+5confidence = maximum(strong, weak)
+
+这个写法等价于：
+
+1db < -60 → 0
+2-60<=db<-40 → 线性 0→1
+3db>=-40 → 1
+
+融合：
+
+1output = guide_image + sigmoid(raw_mix) * confidence * (learned_image-guide_image)
+
+4 次 DC：
+
+1correction = A_H(A(output)-observed)
+2output = confidence * (output-softplus(raw_step)*correction)
+
+注意乘 confidence 的位置在整个更新之后；这会让 confidence=0 的区域每一步严格归零。
+
+31.3 Round 34
+
+_ResidualCNN 精确结构：
+
+1Conv2d(2,32,3,padding=1,bias=True)
+2GELU
+3Conv2d(32,32,3,padding=1,bias=True)
+4GELU
+5Conv2d(32,2,3,padding=1,bias=True)
+
+1residual_complex = complex_from_channels(cnn(complex_to_channels(guide_image)))
+2residual = tanh(scale) * residual_complex # scale init=0.05
+3output = guide_image + guide_mask * residual
+
+容易写错处：refiner 输入是 states.guide_image，不是 learned branch output；最后没有显式 DC。
+
+Round 34 参数量 30,149 的精确来源：
+
+1GuideSupportFusionADMM(dc_steps=4):
+2 shared support-gated CNN = 19,684
+3 learned c/tau/beta = 24
+4 raw_support_db = 1
+5 raw_mix = 1
+6 raw_dc_steps = 4
+7 subtotal = 19,714
+8
+9Residual CNN:
+10 Conv 2→32, 3×3 = 608
+11 Conv 32→32, 3×3 = 9,248
+12 Conv 32→2, 3×3 = 578
+13 convolution subtotal = 10,434
+14 residual scale scalar = 1
+15 subtotal = 10,435
+16
+17total = 19,714 + 10,435 = 30,149
+
+评估中看到的“多 2 个 scalar”来自父 guide 明确以 dc_steps=4 构造，而常用 Guide baseline 参数量 19,712 是 dc_steps=2。R34 最终 forward 虽不使用 states.output，父模块的 4 个 raw_dc_steps 仍注册为参数并计入总参数量；这也是 DDP 需要 find_unused_parameters=True 的原因之一。
+
+31.4 Round 35
+
+父 guide 模块仍被构建并计算 states，但最终 solver 从：
+
+1output = guide_image * guide_mask
+
+开始，随后执行 8 次：
+
+1residual = A(output)-observed
+2output = guide_mask * (output-softplus(raw_step)*A_H(residual))
+
+raw_steps 是形状 [8] 的 Parameter，全部初始化为 -2.0。guide mask 每步重新相乘，因此 mask 外永远严格为 0。这解释了 point-only 极好而 Yak 极度稀疏。
+
+31.5 Round 36
+
+网络类直接继承 Round 33，forward 完全相同。Round 36 与 Round 33 的网络结构和参数量均相同；差异仅为：
+
+1dense probability: 0.50 → 0.75
+2独立重新训练
+3model_config round_variant 名称不同
+
+不要额外添加一个 distillation head；历史实现中的 distillation 只存在于 loss 的 support-energy hinge。
+
+32. Checkpoint 文件格式与兼容加载
+
+32.1 Round 32–36 checkpoint schema
+
+1{
+2 "model_state": raw_model.state_dict(),
+3 "optimizer_state": optimizer.state_dict(),
+4 "model_config": raw_model.model_config,
+5 "epoch": epoch_number,
+6 "history": history_list,
+7 "model_family": "rounds32_36",
+8}
+
+模型保存的是未包 DDP 的 raw_model.state_dict()，所以 key 不应带 module. 前缀。加载步骤：
+
+1payload = torch.load(path, map_location="cpu", weights_only=False)
+2model = build_model(payload["model_config"]["round_variant"], image_shape, measurement_shape)
+3model.load_state_dict(payload["model_state"], strict=True)
+4model.eval()
+
+冻结 Stage 1 guide 的权重可能同时出现在 state dict 中，但 model_config 不应公开写死本机 teacher 路径。构建模型时仍需先提供可用 guide checkpoint，随后 state dict 会覆盖注册参数/缓冲区。
+
+32.2 三类训练器的 history/metrics schema
+
+Base trainer：R1–3、R12–15
+
+checkpoint 除 model_state/optimizer_state/model_config/epoch/history 外，还保存：
+
+1scaler_state
+2image_shape
+3measurement_shape
+4num_layers
+5proximal
+6share_proximal
+7best_validation
+
+history.json 前部是逐 epoch：
+
+1{"epoch": e, "train": {...}, "validation": {...}}
+
+训练结束后再追加一项：
+
+1{"test": {...}, "fixed_fast_admm": {...}, "benchmark": {...}}
+
+metrics.json 只有：
+
+1{"test": ..., "fixed_fast_admm": ..., "benchmark": ...}
+
+没有 selected_checkpoint 字段，而且历史实现 test 直接评测训练结束时的 raw_model，不会 reload checkpoint-best.pt。
+
+Support trainer 及其 monkeypatch 派生：R4–11、R16–31
+
+checkpoint 额外保存：
+
+1scaler_state
+2trackers
+3model_family = support_fusion_admm_v1
+
+history.json 只含逐 epoch row。metrics.json 包含：
+
+1selected_checkpoint
+2test
+3fixed_fast_admm_reference
+4benchmark
+5parameter_count
+6trackers
+7config
+
+它会按 constrained→score 回退链 reload 被选 checkpoint 后再 test。
+
+Round 32–36 trainer
+
+checkpoint schema 见第 32.1 节；不保存 scaler_state 和 selector 的 best score。history.json 只含逐 epoch train/validation。metrics.json 包含：
+
+1selected_checkpoint
+2test
+3parameter_count
+4latency_ms
+5config
+
+因此不能写一个假定所有 history.json/metrics.json 字段相同的通用 parser；应先按训练器族或字段存在性做兼容解析。
+
+32.3 精确复现的三个等级
+
+必须对“复刻”做严格区分：
+
+A. 架构级复刻
+
+只依赖本文档即可完成：模块、tensor shape、forward 顺序、参数量、loss、数据分布和 selector 应全部一致。
+
+B. 训练级复刻
+
+使用相同代码、seed、数据 RNG、GPU 数、PyTorch/CUDA/cuDNN 版本和 checkpoint selector，可复现相同趋势和接近的数值。DDP reduction、FFT kernel 和 AMP 可能导致小幅数值差异。
+
+C. 权重/逐像素级复刻
+
+CNN/Transformer 有数万到数十万学习权重，Markdown 没有逐项嵌入这些浮点数；没有原始 checkpoint 时不可能从结果表反推出完全相同的权重。因此本文档保证的是 A，并尽量支持 B；若要求 C，必须另行复制对应 .pt checkpoint。Section 25 中列出的 scalar schedule 是例外，它足以恢复那些 scalar-only 模型的主要 learned forward 参数。
+
+另一个对话不应声称“仅凭文档可逐 bit 恢复 R2–R36 的所有已训练神经网络权重”。正确的验收口径是结构、参数量、训练行为、趋势和指标范围。
+
+33. 结果文件、评测来源与重新生成顺序
+
+33.1 每轮训练产物
+
+每个完整训练任务至少应生成：
+
+1checkpoint-best*.pt 或 checkpoint-last.pt
+2history.json
+3metrics.json
+4train.log
+
+Round 32–36 还应生成独立固定评测 JSON 和 Yak 图。旧 31 轮的统一可视化脚本输出：
+
+1all_31_training_visualization_metrics.json
+2all_31_complete_trainings_yak42_seed0_60db.png
+3group_01...png 至 group_08...png
+4single/round_01...png 至 single/round_31...png
+
+33.2 推荐完全重建顺序
+
+11. 实现并测试 complex conversion、A、A_H、complex soft-threshold。
+22. 训练 R1 Stage 1；它同时是后续 guide teacher。
+33. 并行训练 R2/R3。
+44. 实现 SupportFusion，训练 R4–R7。
+55. 实现 GuideSupportFusion，加载 R1 teacher，训练 R8–R11。
+66. 训练 scalar depth/echo sweeps R12–R19。
+77. 实现 clean-echo loss，训练 R20–R23。
+88. 实现 Structured-v1，训练 R24–R27。
+99. 实现 Dense-v2，训练 R28–R31。
+1010. 先实现统一 Round 32–36 trainer，再分别训练 R32–R36。
+1111. 对所有 checkpoint 用同一 Yak seed 0、[-60,0] dB 生成 31 轮旧图。
+1212. 对 R32–R36 额外评测 point-only 500、dense-only 500、Yak seed 0–9。
+1313. 先比较数值，再看图；若图与表矛盾，优先检查 checkpoint 和显示窗口。
+
+33.3 Round 32–36 的两套 synthetic 数字为什么不同
+
+Section 28 单表中训练后的 metrics.json test 是 mixed-domain test，因此例如 Round 32 的 mixed image NMSE 为约 0.08856。Section 26 的 Point image 与 Dense image 是训练结束后分别重新创建 point-only 500 和 dense-only 500 的固定评测：
+
+1mixed metrics.json ≠ point-only evaluation ≠ dense-only evaluation
+
+复刻时不可把 mixed test 的 0.08856 与 point-only 的 0.006898 当成冲突。它们来自不同数据分布。
+
+Round 32–36 的训练后 mixed test 原始结果如下，均来自重新加载各自 checkpoint-best.pt 后的 500 样本 test：
+
+RMixed imageClean echoObserved residualDiscrepancyBackgroundSupport lossTotal320.0885630.0230260.2677670.0009890.02289800.104755330.1110890.0330160.2775260.0020310.01451500.130703340.1951920.0507020.2686530.0037990.05738700.232401350.3488450.1673270.2772250.0159120.13750900.461602360.1330250.0473740.2857350.0032560.02050700.161139
+
+对应 Yak seed 0–9 聚合结果中的 entropy/band/support：
+
+RYak entropy-40~-60 dB band>-60 dB supportReview 结论322.6890.8200%1.5981%当前后五轮综合首选333.1840.9875%1.5318%通过，但 dense 泛化弱于 R32343.15731.7529%32.2110%失败：连续 mask 下 residual leakage351.8230.1025%0.2556%Yak 失败；保留为 physics-solve 消融363.5541.0870%1.5651%通过；dense 优于 R33，综合低于 R32
+
+33.4 结果趋势的硬验收区间
+
+考虑训练非确定性，可用以下宽松区间判断实现是否发生结构性错误：
+
+1R1 Yak band 应为个位百分比，而不是 50% 以上。
+2R2/R3 Yak band 应明显高于 R1，历史值约 69%/75%。
+3R8–R11 Yak support 应约 0.5%–2%，不应出现全图稠密。
+4R12–R15 Yak band 应非常高，历史值约 80%–85%。
+5R16→R19 Yak band 应随 observed echo weight 总体单调增加。
+6R20–R31 Yak support 应极低，通常低于 0.1%。
+7R32 Yak band 应约 0.5%–1.5%，support 约 1%–2.5%。
+8R34 Yak band 若仍约 30%，说明正确复现了 residual leakage 失败机制。
+9R35 point image 应显著优于 dense image，且 Yak support 远低于 1%。
+10R36 应接近 R33，但 dense 泛化优于 R33；不应被实现成新 head。
+
+若完全相反，依次检查：
+
+1complex channel 顺序 → FFT shift → A/A_H normalization → support dB normalization
+2→ mask 乘法位置 → echo target 是 clean 还是 observed → selector → 可视化 dB 窗口
+
+34. 最终“无代码复刻”交付清单
+
+另一个对话阅读本文档后，至少应能交付以下内容才算复刻完成：
+
+ 6 个基础物理/复数函数，shape 与数值测试通过。
+
+ Stage 1、CNN proximal、Transformer proximal 三个基础网络。
+
+ SupportFusion、GuideSupportFusion 和 DeepScalar 三个历史派生族。
+
+ Round 32–36 五个类，forward 顺序与第 31 节一致。
+
+ point、Structured-v1、Dense-v2 三类生成器和混合概率逻辑。
+
+ observed-echo、noise-aware、Round32 三套 loss。
+
+ best、score、constrained、R32Best 四套 selector 行为。
+
+ Round 1–36 配置注册表，任意 Round 编号可一键构建模型/数据/loss。
+
+ 参数量断言；至少覆盖 R1/R2/R3/Support/Guide/R32–R36。
+
+ 训练产物 schema、严格 checkpoint reload 和统一评测脚本。
+
+ 8 张旧 group 图、1 张 31 轮总览以及 5 张后续单轮图。
+
+ 一份复现实验报告，逐轮给出 synthetic、Yak、参数量、延迟和失败原因。
+
+最推荐将全部 Round 配置写成不可变 registry，而不要复制 36 份训练代码。例如：
+
+1ROUND_REGISTRY = {
+2 1: dict(model="stage1", dataset="point", layers=8, echo=.1, ...),
+3 2: dict(model="cnn", dataset="point", layers=8, echo=.5, ...),
+4 # ...
+5 36: dict(model="round36_support_distill", dataset="mixed_dense", p=.75, ...),
+6}
+
+但 registry 只是工程重构；它不能改变任何历史行为，尤其不能“顺手修复”以下现象：
+
+1R16–R19 命令传 proximal=cnn 但模型忽略它；
+2R20–R23 constrained selector 实际约束 clean echo；
+3R32–R36 参数名 structured_probability 实际代表 dense probability；
+4R34 连续 mask 导致底噪泄漏；
+5R36 没有独立 distillation head。
+
+这些看似不优雅的行为正是历史实验定义的一部分，只有保留它们，八组图、36 轮结果和 review 结论才是一致的。
+
+35. 复刻缺口审计与处理结论
+
+针对外部复刻评估提出的项目，本次逐项以实际实现核对，结论如下：
+
+项目是否需要补影响等级本次处理Yak42.mat 预处理是最高第 10.1 节补齐切片、归一化、噪声、SNR、IFFT、dtype 和 seedFast-ADMM-40 参数是高第 10.3 节补齐 alpha/delta/tol/迭代、初始化、停止和返回状态Stage 1 sparsity是中第 2.4 节明确为最终 X_pred 的全 tensor mean magnitudeR4–31 background是中第 9.3 节区分 R4–7 L2 与 R8–31 L1+L2，并给出归一化R2/R3 best selector是高第 9.3 节明确 val total，并记录 validation echo=.1 的历史行为Entropy是中第 10.2 节补齐 energy probability + natural-log Shannon entropyDense landmark是中第 8.3 节补齐六个坐标、jitter、amplitude、phase 和 sigmaPoint RNG/区间是中第 8.1 节补齐闭区间 count、全图整数位置、collision 和 mixed RNG 顺序Structured hub 幅相是低第 8.2 节确认与普通 coords 共用 .35–1.0 幅度和随机相位R34 差 2 个参数是低第 31.3 节说明来自父 guide 的 DC4 相对 DC2 多出的 2 个 scalardB epsilon/DPI可补低第 10.4 节写入 display/metric 两套 epsilon 和 180/160 DPI
+
+补齐后，架构级 A 复刻已无已知关键定义缺口；训练级 B 的主要剩余不确定性来自运行环境而不是规范内容：
+
+1PyTorch/CUDA/cuDNN/FFT kernel 版本
+2DDP 浮点 reduction 顺序
+3bfloat16 数值路径
+4GPU 型号与并发负载
+5原始 checkpoint 是否可获得
+
+另一个对话若严格照本文档实现，仍应先用参数量、shape、A/A_H 数值测试和第 33.4 节趋势区间验收，再讨论与历史结果的小数点级差异。
+
+36. 第二轮代码对照审计结论
+
+36.1 已在上一轮补齐、不再重复修改
+
+以下报告项在上一版本中已经存在精确定义：
+
+1Yak42.mat 五步预处理
+2energy-normalized natural-log entropy
+3Fast-ADMM-40 完整更新
+4Stage 1 mean(|X_pred|) sparsity
+5R2/R3 与 R12–R15 validation-total selector 及 echo=.1 历史行为
+6cache/no-cache RNG 差异和 mixed 首次 Bernoulli 消耗
+7Structured hub 幅相
+8Dense 六个 landmark
+9R34 dc_steps=4 参数量来源
+
+本轮只补其尚未覆盖的联系或工程细节，例如 Fast-ADMM→Stage 1 初始化关系、Dense 三条结构端点和 Structured RNG 调用顺序。
+
+36.2 本轮确认需要修改并已补齐
+
+1R32–36 实际双面板，Structured generalization 才是三面板
+2post-training fixed seed 3,000,000 与 3,200,000
+3旧“Round 1–10”代表编号陷阱
+4R1–31 state-dict key 模型派发
+5AMP/GradScaler/complex dtype/cudnn/OMP 的分训练器行为
+6六套 latency 测量协议
+7CNN/Transformer 显式与默认初始化
+8firm support 和 confidence 的逐样本 peak
+9Structured 坐标后统一抽 amplitude/phase 的 RNG 顺序
+10base/support/rounds 三类 checkpoint/history/metrics schema
+11Guide checkpoint 环境变量和三-key copy 协议
+12必要评测/可视化/Yak/经典 ADMM 文件清单
+
+36.3 报告中不应原样采纳的描述
+
+两点需要纠正后记录：
+
+不能说“所有训练器都设置 cudnn.benchmark=True”：base/support 设了，Round 32–36 trainer 没设。
+
+不能说“所有 run 都设置 OMP_NUM_THREADS=1”：大多数脚本设了，但 Dense-v2 pilot shell 没有显式设置。
+
+此外，evaluate_structured_generalization.py 是 Structured-v1 公平评测脚本；它能够加载 SupportFusion checkpoint，但不能据此笼统称为“R20–31 全部统一三面板流程”。Round 28–31 的 Dense-v2 公平固定域评测在当时仍未由该脚本完整覆盖。文档现在按脚本用途而不是按猜测范围描述。
+
+37. 路径锚点、环境变量链和评测产物等级
+
+37.1 推荐目录布局
+
+历史有效布局不是把产物放进代码仓库，而是：
+
+1<WORKSPACE_ROOT>/
+2 ADMM/ # repository root
+3 runs/ # all checkpoints, metrics and figures
+4 admm_stage1_full_8gpu/
+5 ...
+6 admm_round36_support_distill/
+
+所以第 28 节中的相对路径 runs/... 都应解释为相对 <WORKSPACE_ROOT>，不是相对 <REPO_ROOT>。当前代码仓库内的 <REPO_ROOT>/runs 没有历史产物。
+
+37.2 三个路径变量的真实关系
+
+推荐在运行任何训练/评测前统一设置：
+
+1export REPO_ROOT=<WORKSPACE_ROOT>/ADMM
+2export RUN_ROOT=<WORKSPACE_ROOT>/runs
+3export ADMM_WORKSPACE=<WORKSPACE_ROOT>
+4export GUIDE_CHECKPOINT="$RUN_ROOT/admm_stage1_full_8gpu/checkpoint-last.pt"
+
+变量职责：
+
+1RUN_ROOT:
+2 Stage 1/2/3 full run shell 的输出根；
+3 guide/round32–36 wrapper 也用它派生 GUIDE_CHECKPOINT。
+4
+5ADMM_WORKSPACE:
+6 统一可视化脚本的 ROOT；脚本随后读取 ROOT/runs 和 ROOT/ADMM/Yak42.mat。
+7
+8GUIDE_CHECKPOINT:
+9 GuideSupportFusion 和 Round 32–36 的 Stage 1 teacher 文件。
+
+默认行为并不完全统一：
+
+1run_admm_* shell:
+2 RUN_ROOT 未设置时默认 <REPO_ROOT>/runs，和历史 <WORKSPACE_ROOT>/runs 不同。
+3
+4pilot wrappers:
+5 多数要求调用方直接提供 OUTPUT_DIR；guide 路径仍由 RUN_ROOT 或 GUIDE_CHECKPOINT 决定。
+6
+7generate_*visualizations.py:
+8 ADMM_WORKSPACE 未设置时默认 Path(__file__).resolve().parent.parent；
+9 在推荐布局下它正好等于 <WORKSPACE_ROOT>，所以并非必须外部设置。
+10
+11model-level guide default:
+12 GUIDE_CHECKPOINT 未设置时是相对当前工作目录的 runs/admm_stage1_full_8gpu/checkpoint-last.pt；
+13 从 <REPO_ROOT> 启动时会错误指向 <REPO_ROOT>/runs。
+
+因此“历史上三个变量一定都由外部设置”无法仅从 artifact 证明；更准确的结论是：RUN_ROOT 或明确 OUTPUT_DIR 必须把训练产物导向 workspace runs，guide 必须解析到真实 Stage 1 checkpoint，而 ADMM_WORKSPACE 在当前布局下可以依靠正确默认值。为了无歧义复刻，仍推荐显式设置四个变量。
+
+路径自检：
+
+1test -f "$GUIDE_CHECKPOINT"
+2test -f "$REPO_ROOT/Yak42.mat"
+3test -d "$RUN_ROOT"
+
+37.3 冒烟与正式 fixed evaluation 产物
+
+Round 32 目录同时保留了两级评测：
+
+1eval_round32.json
+2 point-only samples = 50
+3 dense-only samples = 50
+4 Yak seeds = [0,1]
+5 figure = yak42_seed0.png
+6
+7eval_round32_full.json
+8 point-only samples = 500
+9 dense-only samples = 500
+10 Yak seeds = [0,1,2,3,4,5,6,7,8,9]
+11 figure = yak42_seed0_full.png
+
+论文表和本文第 26/33 节使用 _full 结果。非 _full 文件只是评测链路 smoke，不算新的训练轮，也不能和正式结果表混用。
+
+当前 artifact 中 Round 33–36 只保留 _full JSON/PNG；不能笼统声称每一轮都同时存在 smoke 和 full 两套文件。复刻新实验时建议统一命名：
+
+1smoke: eval_<label>.json, yak42_seed0.png
+2full: eval_<label>_full.json, yak42_seed0_full.png
+
+同时建议在新 evaluator 的 JSON 顶层显式写入：
+
+1synthetic_seed
+2synthetic_samples
+3yak_seeds
+4latency_warmup
+5latency_repeats
+
+这是对未来 artifact 自描述性的改进；历史 JSON 不应被回写或覆盖。
+
+38. 第三轮建议评估结论
+
+建议判断处理runs 锚点和变量链值得改第 37.1–37.2 节补齐，并纠正“ADMM_WORKSPACE 必须外设”的过度推断R24–31 概率注入值得改第 28.2.1 节补齐 env + monkey-patch，与 R32–36 CLI 区分fixed eval seed已写但需加强第 10.5 节注明 Round32 evaluator 的 JSON 不保存 seed，本文档是唯一无代码锚点三个强测试值得改第 27.1 节新增 adjoint、zero stability、fast-vs-explicitFast-ADMM Yak 行值得改第 24.2.1 节加入 seed-0 完整参考指标smoke/full 命名值得改但需限范围第 37.3 节说明当前只有 R32 同时保留两级产物两个辅助脚本不属于硬缺口第 27 节标为可选并说明排除理由

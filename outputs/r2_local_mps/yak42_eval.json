@@ -1,0 +1,115 @@
+{
+  "round": 2,
+  "checkpoint": "outputs/r2_local_mps/checkpoint-best.pt",
+  "network": [
+    {
+      "entropy": 3.0031495094299316,
+      "band_40_60_pixel_fraction": 0.4158172607421875,
+      "band_40_60_energy_fraction": 0.02302713878452778,
+      "support_above_40_fraction": 0.008453369140625,
+      "support_above_60_fraction": 0.4242706298828125,
+      "seed": 0.0,
+      "snr_db": 10.027920254020215,
+      "observed_residual": 0.26519866089044725
+    },
+    {
+      "entropy": 3.0101749897003174,
+      "band_40_60_pixel_fraction": 0.420501708984375,
+      "band_40_60_energy_fraction": 0.0230739563703537,
+      "support_above_40_fraction": 0.008636474609375,
+      "support_above_60_fraction": 0.42913818359375,
+      "seed": 1.0,
+      "snr_db": 10.09044653257589,
+      "observed_residual": 0.2657795083932236
+    },
+    {
+      "entropy": 3.0129475593566895,
+      "band_40_60_pixel_fraction": 0.42474365234375,
+      "band_40_60_energy_fraction": 0.023310808464884758,
+      "support_above_40_fraction": 0.008758544921875,
+      "support_above_60_fraction": 0.433502197265625,
+      "seed": 2.0,
+      "snr_db": 10.010436615769487,
+      "observed_residual": 0.26666090494124134
+    },
+    {
+      "entropy": 3.0013315677642822,
+      "band_40_60_pixel_fraction": 0.4055328369140625,
+      "band_40_60_energy_fraction": 0.023623228073120117,
+      "support_above_40_fraction": 0.008056640625,
+      "support_above_60_fraction": 0.4135894775390625,
+      "seed": 3.0,
+      "snr_db": 10.051955503706363,
+      "observed_residual": 0.266660034850182
+    },
+    {
+      "entropy": 3.020925998687744,
+      "band_40_60_pixel_fraction": 0.424591064453125,
+      "band_40_60_energy_fraction": 0.023557497188448906,
+      "support_above_40_fraction": 0.0084686279296875,
+      "support_above_60_fraction": 0.4330596923828125,
+      "seed": 4.0,
+      "snr_db": 10.017832913301563,
+      "observed_residual": 0.26632134533299695
+    }
+  ],
+  "fast_admm": [
+    {
+      "seed": 0,
+      "entropy": 4.276909882526581,
+      "band_40_60_pixel_fraction": 0.0006256103515625,
+      "band_40_60_energy_fraction": 8.489965712720782e-05,
+      "support_above_40_fraction": 0.005218505859375,
+      "support_above_60_fraction": 0.0058441162109375,
+      "observed_residual": 0.18750388028125944,
+      "elapsed_seconds": 0.06043741712346673,
+      "iterations": 40.0
+    },
+    {
+      "seed": 1,
+      "entropy": 4.300072920821868,
+      "band_40_60_pixel_fraction": 0.000579833984375,
+      "band_40_60_energy_fraction": 8.498881449699438e-05,
+      "support_above_40_fraction": 0.005126953125,
+      "support_above_60_fraction": 0.005706787109375,
+      "observed_residual": 0.18722557722690467,
+      "elapsed_seconds": 0.05937425000593066,
+      "iterations": 40.0
+    },
+    {
+      "seed": 2,
+      "entropy": 4.294434638262914,
+      "band_40_60_pixel_fraction": 0.000518798828125,
+      "band_40_60_energy_fraction": 7.174417063677534e-05,
+      "support_above_40_fraction": 0.0052947998046875,
+      "support_above_60_fraction": 0.0058135986328125,
+      "observed_residual": 0.1891346209853895,
+      "elapsed_seconds": 0.05994241707958281,
+      "iterations": 40.0
+    },
+    {
+      "seed": 3,
+      "entropy": 4.274971861323993,
+      "band_40_60_pixel_fraction": 0.000701904296875,
+      "band_40_60_energy_fraction": 8.197348388064002e-05,
+      "support_above_40_fraction": 0.0051727294921875,
+      "support_above_60_fraction": 0.0058746337890625,
+      "observed_residual": 0.18823075213029425,
+      "elapsed_seconds": 0.05964966700412333,
+      "iterations": 40.0
+    },
+    {
+      "seed": 4,
+      "entropy": 4.277688458677455,
+      "band_40_60_pixel_fraction": 0.0009307861328125,
+      "band_40_60_energy_fraction": 0.00011599296944667368,
+      "support_above_40_fraction": 0.0053253173828125,
+      "support_above_60_fraction": 0.006256103515625,
+      "observed_residual": 0.1899076162363069,
+      "elapsed_seconds": 0.06028091604821384,
+      "iterations": 40.0
+    }
+  ],
+  "network_latency_ms": 18.17918960005045,
+  "parameter_count": 19707
+}

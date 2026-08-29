@@ -1,0 +1,20 @@
+{
+  "test": {
+    "image": 0.7521755695343018,
+    "echo": 0.1619475744664669,
+    "observed_residual": 0.1619475744664669,
+    "sparse": 0.0017410389773431234,
+    "background": 0.0,
+    "total": 0.7683705016970634
+  },
+  "fixed_fast_admm": {
+    "image_nmse": 0.6270719076861697,
+    "image_entropy": 4.610218388209355,
+    "iterations": 40.0
+  },
+  "benchmark": {
+    "latency_ms": 7.711618754547089,
+    "warmup": 3.0,
+    "repeats": 20.0
+  }
+}

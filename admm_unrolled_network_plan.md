@@ -1,6 +1,6 @@
 # ADMM 展开网络与服务器迁移计划
 
-Last updated: 2026-08-23
+Last updated: 2026-08-27
 
 这份文档是服务器新对话的执行说明。开始实现前，先阅读本文件、
 `memory_2DADMM.md` 和 `readpaper.md`。
@@ -248,7 +248,8 @@ L = L_image + 0.1 · L_echo + 0.0001 · L_sparse
 `0.784680` 降到 `0.109051`，测试总损失为 `0.083766`。同一测试集上的固定
 40 次 Fast 2D-ADMM 平均图像 NMSE 为 `0.547422`、平均图像熵为 `4.349631`。
 两者损失定义和输出尺度不同，这个结果只说明原型训练管线可运行，不能直接
-解释为论文级优越性；尚未完成全尺寸合成数据适配或论文级消融实验。
+解释为论文级优越性；这是 2026-08-23 的旧原型结果。2026-08-27 已完成
+全尺寸体系代码和工程 smoke，但仍未在本机重跑正式 GPU 训练或论文级消融。
 
 ## 8. 测试与验收标准
 
@@ -276,7 +277,7 @@ L = L_image + 0.1 · L_echo + 0.0001 · L_sparse
 
 ## 9. 服务器迁移说明
 
-当前不需要立即迁移。需要迁移时，服务器新对话应先读取：
+代码已具备迁移条件。服务器新对话应先读取：
 
 ```text
 2D_ADMM/memory_2DADMM.md
@@ -303,7 +304,7 @@ pytest 2D_ADMM/tests
 
 然后先运行小尺寸训练，再运行全尺寸训练。不要直接从服务器上开始大规模训练。
 
-## 10. 当前状态
+## 10. 当前状态（2026-08-27）
 
 已完成：
 
@@ -311,8 +312,17 @@ pytest 2D_ADMM/tests
 - 普通 2D-ADMM Python 移植；
 - Fast 2D-ADMM Python 移植；
 - Yak-42 demo；
-- 8 项基础测试；
-- 固定 Fast 2D-ADMM Yak-42 验证。
+- Stage 1 scalar、CNN、Transformer 三个基础网络；
+- SupportFusion、GuideSupportFusion、DeepScalar 三个派生族；
+- Round 32--36 五个后续模型；
+- Point、Structured-v1、Dense-v2 三类数据生成器；
+- R1--R36 不可变 registry、统一 loss、selector 和训练入口；
+- 三类历史 checkpoint/history/metrics schema；
+- R1--R31 总览图与 R32--R36 固定评测脚本；
+- 52 项自动测试；
+- 15 个代表 Round 的 CPU 训练 smoke；
+- 一次 R32 全尺寸评测链路 smoke；
+- 固定 Fast 2D-ADMM Yak-42 锚点验证。
 
 已验证的固定 ADMM 基线：
 
@@ -324,18 +334,14 @@ SNR：10.027920 dB
 迭代次数：40
 ```
 
-待实现：
-
-- ADMM 展开网络；
-- 合成 ISAR 数据集生成器；
-- 网络训练脚本；
-- 展开网络测试；
-- 小尺寸和全尺寸训练结果。
-
 尚未完成：
 
-- 网络训练；
-- 网络 Yak-42 结果；
-- 服务器实验；
-- CNN 近端扩展；
+- 本机没有重跑 R1--R36 的正式 GPU 训练；
+- 没有服务器 CNN/Transformer checkpoint，不能逐权重恢复历史网络；
+- 没有在本机复现 R32 的正式服务器指标；
+- 正式服务器训练和固定 500-sample、Yak seed 0--9 评测；
 - 欠采样网络实验。
+
+服务器继续执行时，以 `ADMM 神经替代网络完整复刻规范.txt` 为定义来源，
+以 `SERVER_RUNBOOK.md` 为命令入口，以 `ADMM_NETWORK_REPLICATION.md` 为当前
+工程验收记录。旧的 1024/128/128 Stage-1 原型仍保留，但不再代表完整体系。

@@ -16,7 +16,7 @@ keeps the reconstruction physics explicit and has very few trainable weights.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Literal
 
 import torch
 from torch import Tensor, nn
@@ -48,7 +48,7 @@ def complex_from_channels(values: Tensor) -> Tensor:
 
     if values.ndim < 3 or values.shape[-3] != 2:
         raise ValueError("expected a tensor with a two-channel dimension")
-    if not torch.is_floating_point(values):
+    if values.dtype not in (torch.float32, torch.float64):
         values = values.float()
     return torch.complex(values.select(-3, 0), values.select(-3, 1))
 
@@ -134,8 +134,82 @@ class ADMMParameters:
     beta: Tensor
 
 
-class UnrolledADMM(nn.Module):
-    """An ``L``-layer scalar-parameter ADMM unfolding network.
+class ComplexResidualProx(nn.Module):
+    """Shared residual CNN proximal used by the historical Stage 2 model."""
+
+    def __init__(self, *, channels: int = 32, depth: int = 3) -> None:
+        super().__init__()
+        if channels <= 0 or depth <= 0:
+            raise ValueError("channels and depth must be positive")
+        layers: list[nn.Module] = [nn.Conv2d(2, channels, 3, padding=1), nn.GELU()]
+        for _ in range(depth - 1):
+            layers.extend((nn.Conv2d(channels, channels, 3, padding=1), nn.GELU()))
+        layers.append(nn.Conv2d(channels, 2, 3, padding=1))
+        self.network = nn.Sequential(*layers)
+        self.scale = nn.Parameter(torch.tensor(0.1))
+
+    def correction(self, values: Tensor) -> Tensor:
+        channels = complex_to_channels(values)
+        return complex_from_channels(self.network(channels))
+
+    def forward(self, values: Tensor) -> Tensor:
+        return values + torch.tanh(self.scale) * self.correction(values)
+
+
+class TransformerProx(nn.Module):
+    """Patch-transformer residual proximal used by historical Stage 3."""
+
+    def __init__(
+        self,
+        image_shape: Shape2D,
+        *,
+        patch: int = 8,
+        embed_dim: int = 96,
+        depth: int = 2,
+        heads: int = 4,
+    ) -> None:
+        super().__init__()
+        image_shape = _validate_shape("image_shape", image_shape)
+        if patch <= 0 or any(size % patch for size in image_shape):
+            raise ValueError("image dimensions must be divisible by patch")
+        if embed_dim <= 0 or depth <= 0 or heads <= 0 or embed_dim % heads:
+            raise ValueError("invalid Transformer dimensions")
+        self.image_shape = image_shape
+        self.patch = patch
+        self.embedding = nn.Conv2d(2, embed_dim, patch, stride=patch)
+        token_count = (image_shape[0] // patch) * (image_shape[1] // patch)
+        self.position = nn.Parameter(torch.zeros(1, token_count, embed_dim))
+        layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=heads,
+            dim_feedforward=4 * embed_dim,
+            dropout=0.0,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(layer, depth)
+        self.projection = nn.ConvTranspose2d(embed_dim, 2, patch, stride=patch)
+        self.scale = nn.Parameter(torch.tensor(0.1))
+
+    def correction(self, values: Tensor) -> Tensor:
+        channels = complex_to_channels(values)
+        embedded = self.embedding(channels)
+        batch, width, rows, columns = embedded.shape
+        tokens = embedded.flatten(2).transpose(1, 2) + self.position
+        encoded = self.encoder(tokens)
+        decoded = self.projection(encoded.transpose(1, 2).reshape(batch, width, rows, columns))
+        return complex_from_channels(decoded)
+
+    def forward(self, values: Tensor) -> Tensor:
+        return values + torch.tanh(self.scale) * self.correction(values)
+
+
+ProximalKind = Literal["none", "cnn", "transformer"]
+
+
+class PhysicsUnrolledADMM(nn.Module):
+    """An ``L``-layer physics-guided ADMM unfolding network.
 
     The initial values ``c=0.5``, ``tau=0.0065`` and ``beta=1`` reproduce the
     scale of the fixed Fast 2D-ADMM implementation (with ``delta=1`` and
@@ -152,6 +226,14 @@ class UnrolledADMM(nn.Module):
         init_c: float = 0.5,
         init_tau: float = 0.0065,
         init_beta: float = 1.0,
+        proximal: ProximalKind = "none",
+        share_proximal: bool = True,
+        cnn_channels: int = 32,
+        cnn_depth: int = 3,
+        transformer_patch: int = 8,
+        transformer_dim: int = 96,
+        transformer_depth: int = 2,
+        transformer_heads: int = 4,
     ) -> None:
         super().__init__()
         self.image_shape = _validate_shape("image_shape", image_shape)
@@ -166,6 +248,58 @@ class UnrolledADMM(nn.Module):
         self.raw_c = nn.Parameter(torch.full((num_layers,), _inverse_softplus(init_c)))
         self.raw_tau = nn.Parameter(torch.full((num_layers,), _inverse_softplus(init_tau)))
         self.raw_beta = nn.Parameter(torch.full((num_layers,), _inverse_softplus(init_beta)))
+        if proximal not in ("none", "cnn", "transformer"):
+            raise ValueError("proximal must be none, cnn, or transformer")
+        self.proximal_kind = proximal
+        self.share_proximal = bool(share_proximal)
+        self._proximal_config = {
+            "cnn_channels": cnn_channels,
+            "cnn_depth": cnn_depth,
+            "transformer_patch": transformer_patch,
+            "transformer_dim": transformer_dim,
+            "transformer_depth": transformer_depth,
+            "transformer_heads": transformer_heads,
+        }
+        if proximal == "none":
+            self.proximal: nn.Module | nn.ModuleList | None = None
+        elif self.share_proximal:
+            self.proximal = self._make_proximal()
+        else:
+            self.proximal = nn.ModuleList(
+                self._make_proximal() for _ in range(self.num_layers)
+            )
+
+    @property
+    def model_config(self) -> dict[str, object]:
+        return {
+            "image_shape": self.image_shape,
+            "measurement_shape": self.measurement_shape,
+            "num_layers": self.num_layers,
+            "proximal": self.proximal_kind,
+            "share_proximal": self.share_proximal,
+            **self._proximal_config,
+        }
+
+    def _make_proximal(self) -> nn.Module:
+        if self.proximal_kind == "cnn":
+            return ComplexResidualProx(
+                channels=int(self._proximal_config["cnn_channels"]),
+                depth=int(self._proximal_config["cnn_depth"]),
+            )
+        return TransformerProx(
+            self.image_shape,
+            patch=int(self._proximal_config["transformer_patch"]),
+            embed_dim=int(self._proximal_config["transformer_dim"]),
+            depth=int(self._proximal_config["transformer_depth"]),
+            heads=int(self._proximal_config["transformer_heads"]),
+        )
+
+    def _apply_proximal(self, values: Tensor, layer: int) -> Tensor:
+        if self.proximal is None:
+            return values
+        if isinstance(self.proximal, nn.ModuleList):
+            return self.proximal[layer](values)
+        return self.proximal(values)
 
     @property
     def parameters_per_layer(self) -> ADMMParameters:
@@ -177,9 +311,7 @@ class UnrolledADMM(nn.Module):
             beta=torch_functional.softplus(self.raw_beta),
         )
 
-    def forward(self, measurements: Tensor) -> Tensor:
-        """Reconstruct a batch of two-channel complex measurements."""
-
+    def _observed_from_channels(self, measurements: Tensor) -> Tensor:
         if measurements.ndim != 4 or measurements.shape[1] != 2:
             raise ValueError("measurements must have shape [batch, 2, M, N]")
         if tuple(measurements.shape[-2:]) != self.measurement_shape:
@@ -189,35 +321,58 @@ class UnrolledADMM(nn.Module):
             )
         if not torch.is_floating_point(measurements):
             measurements = measurements.float()
-        observed = complex_from_channels(measurements)
+        return complex_from_channels(measurements)
+
+    def unroll_complex(
+        self,
+        observed: Tensor,
+        c: Tensor,
+        tau: Tensor,
+        beta: Tensor,
+        *,
+        use_proximal: bool = True,
+    ) -> tuple[Tensor, Tensor, Tensor]:
         image = fast_adjoint_operator(observed, self.image_shape)
         sparse_image = torch.zeros_like(image)
         scaled_dual = torch.zeros_like(image)
-        params = self.parameters_per_layer
-
         for layer in range(self.num_layers):
             difference = sparse_image - scaled_dual
             residual = fast_forward_operator(difference, self.measurement_shape) - observed
-            next_image = difference - params.c[layer] * fast_adjoint_operator(
+            next_image = difference - c[layer] * fast_adjoint_operator(
                 residual, self.image_shape
             )
             next_sparse = complex_soft_threshold(
-                next_image + scaled_dual, params.tau[layer]
+                next_image + scaled_dual, tau[layer]
             )
-            next_dual = scaled_dual + params.beta[layer] * (next_image - next_sparse)
+            if use_proximal:
+                next_sparse = self._apply_proximal(next_sparse, layer)
+            next_dual = scaled_dual + beta[layer] * (next_image - next_sparse)
             image, sparse_image, scaled_dual = next_image, next_sparse, next_dual
+        return image, sparse_image, scaled_dual
+
+    def forward(self, measurements: Tensor) -> Tensor:
+        """Reconstruct a batch of two-channel complex measurements."""
+
+        observed = self._observed_from_channels(measurements)
+        params = self.parameters_per_layer
+        image, _, _ = self.unroll_complex(
+            observed, params.c, params.tau, params.beta
+        )
 
         return complex_to_channels(image)
 
 
-# A descriptive alias keeps imports readable for callers that prefer the name
-# used in the plan document.
-ADMMUnrolledNetwork = UnrolledADMM
+# Backward-compatible names used by the first local prototype.
+UnrolledADMM = PhysicsUnrolledADMM
+ADMMUnrolledNetwork = PhysicsUnrolledADMM
 
 
 __all__ = [
     "ADMMParameters",
     "ADMMUnrolledNetwork",
+    "ComplexResidualProx",
+    "PhysicsUnrolledADMM",
+    "TransformerProx",
     "UnrolledADMM",
     "complex_from_channels",
     "complex_soft_threshold",

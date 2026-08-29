@@ -49,6 +49,32 @@ def _channels(values: np.ndarray) -> Tensor:
     )
 
 
+def finalize_sparse_target(
+    target: np.ndarray,
+    measurement_shape: Shape2D,
+    *,
+    rng: np.random.Generator,
+    snr_db_range: tuple[float, float] = (-10.0, 30.0),
+) -> tuple[Tensor, Tensor, float]:
+    """Peak-normalize a target, project it, and add complex Gaussian noise."""
+
+    peak = float(np.max(np.abs(target)))
+    if peak == 0.0:
+        raise RuntimeError("scene generation unexpectedly produced an empty target")
+    normalized = np.asarray(target / peak, dtype=np.complex64)
+    clean_echo = _numpy_forward(normalized, measurement_shape)
+    snr_db = float(rng.uniform(*snr_db_range))
+    signal_power = float(np.mean(np.abs(clean_echo) ** 2))
+    noise_power = signal_power / (10.0 ** (snr_db / 10.0))
+    noise_std = np.sqrt(noise_power / 2.0)
+    noise = noise_std * (
+        rng.standard_normal(measurement_shape)
+        + 1j * rng.standard_normal(measurement_shape)
+    )
+    noisy_echo = np.asarray(clean_echo + noise, dtype=np.complex64)
+    return _channels(noisy_echo), _channels(normalized), snr_db
+
+
 def generate_sparse_isar_sample(
     image_shape: Shape2D,
     measurement_shape: Shape2D,
@@ -90,21 +116,12 @@ def generate_sparse_isar_sample(
     values = amplitudes * np.exp(1j * phases)
     for row, column, value in zip(rows, columns, values):
         target[row, column] += value
-    peak = float(np.max(np.abs(target)))
-    if peak == 0.0:
-        raise RuntimeError("sparse scene generation unexpectedly produced an empty target")
-    target /= peak
-
-    clean_echo = _numpy_forward(target, measurement_shape)
-    snr_db = float(rng.uniform(*snr_db_range))
-    signal_power = float(np.mean(np.abs(clean_echo) ** 2))
-    noise_power = signal_power / (10.0 ** (snr_db / 10.0))
-    noise_std = np.sqrt(noise_power / 2.0)
-    noise = noise_std * (
-        rng.standard_normal(measurement_shape) + 1j * rng.standard_normal(measurement_shape)
+    return finalize_sparse_target(
+        target,
+        measurement_shape,
+        rng=rng,
+        snr_db_range=snr_db_range,
     )
-    noisy_echo = np.asarray(clean_echo + noise, dtype=np.complex64)
-    return _channels(noisy_echo), _channels(target), snr_db
 
 
 class SyntheticISARDataset(Dataset[tuple[Tensor, Tensor]]):
@@ -198,4 +215,8 @@ class SyntheticISARDataset(Dataset[tuple[Tensor, Tensor]]):
         return snr_db
 
 
-__all__ = ["SyntheticISARDataset", "generate_sparse_isar_sample"]
+__all__ = [
+    "SyntheticISARDataset",
+    "finalize_sparse_target",
+    "generate_sparse_isar_sample",
+]

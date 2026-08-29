@@ -1,0 +1,115 @@
+{
+  "round": 1,
+  "checkpoint": "outputs/r1_fullshape_trial/checkpoint-last.pt",
+  "network": [
+    {
+      "entropy": 4.531467437744141,
+      "band_40_60_pixel_fraction": 0.0049285888671875,
+      "band_40_60_energy_fraction": 0.00013325715553946793,
+      "support_above_40_fraction": 0.0056915283203125,
+      "support_above_60_fraction": 0.0106201171875,
+      "seed": 0.0,
+      "snr_db": 10.027920254020215,
+      "observed_residual": 0.22298837975300853
+    },
+    {
+      "entropy": 4.539924144744873,
+      "band_40_60_pixel_fraction": 0.00494384765625,
+      "band_40_60_energy_fraction": 0.0001344685151707381,
+      "support_above_40_fraction": 0.0055389404296875,
+      "support_above_60_fraction": 0.0104827880859375,
+      "seed": 1.0,
+      "snr_db": 10.09044653257589,
+      "observed_residual": 0.2220944265574478
+    },
+    {
+      "entropy": 4.541629314422607,
+      "band_40_60_pixel_fraction": 0.005035400390625,
+      "band_40_60_energy_fraction": 0.000153459666762501,
+      "support_above_40_fraction": 0.005523681640625,
+      "support_above_60_fraction": 0.01055908203125,
+      "seed": 2.0,
+      "snr_db": 10.010436615769487,
+      "observed_residual": 0.22384147902231033
+    },
+    {
+      "entropy": 4.53140926361084,
+      "band_40_60_pixel_fraction": 0.0048980712890625,
+      "band_40_60_energy_fraction": 0.00016172298637684435,
+      "support_above_40_fraction": 0.0055999755859375,
+      "support_above_60_fraction": 0.010498046875,
+      "seed": 3.0,
+      "snr_db": 10.051955503706363,
+      "observed_residual": 0.22364516330528056
+    },
+    {
+      "entropy": 4.540838241577148,
+      "band_40_60_pixel_fraction": 0.0053558349609375,
+      "band_40_60_energy_fraction": 0.0001262745790882036,
+      "support_above_40_fraction": 0.005401611328125,
+      "support_above_60_fraction": 0.0107574462890625,
+      "seed": 4.0,
+      "snr_db": 10.017832913301563,
+      "observed_residual": 0.22510206620132975
+    }
+  ],
+  "fast_admm": [
+    {
+      "seed": 0,
+      "entropy": 4.276909882526581,
+      "band_40_60_pixel_fraction": 0.0006256103515625,
+      "band_40_60_energy_fraction": 8.489965712720782e-05,
+      "support_above_40_fraction": 0.005218505859375,
+      "support_above_60_fraction": 0.0058441162109375,
+      "observed_residual": 0.18750388028125944,
+      "elapsed_seconds": 0.05971199995838106,
+      "iterations": 40.0
+    },
+    {
+      "seed": 1,
+      "entropy": 4.300072920821868,
+      "band_40_60_pixel_fraction": 0.000579833984375,
+      "band_40_60_energy_fraction": 8.498881449699438e-05,
+      "support_above_40_fraction": 0.005126953125,
+      "support_above_60_fraction": 0.005706787109375,
+      "observed_residual": 0.18722557722690467,
+      "elapsed_seconds": 0.05753095913678408,
+      "iterations": 40.0
+    },
+    {
+      "seed": 2,
+      "entropy": 4.294434638262914,
+      "band_40_60_pixel_fraction": 0.000518798828125,
+      "band_40_60_energy_fraction": 7.174417063677534e-05,
+      "support_above_40_fraction": 0.0052947998046875,
+      "support_above_60_fraction": 0.0058135986328125,
+      "observed_residual": 0.1891346209853895,
+      "elapsed_seconds": 0.0561877500731498,
+      "iterations": 40.0
+    },
+    {
+      "seed": 3,
+      "entropy": 4.274971861323993,
+      "band_40_60_pixel_fraction": 0.000701904296875,
+      "band_40_60_energy_fraction": 8.197348388064002e-05,
+      "support_above_40_fraction": 0.0051727294921875,
+      "support_above_60_fraction": 0.0058746337890625,
+      "observed_residual": 0.18823075213029425,
+      "elapsed_seconds": 0.056467708898708224,
+      "iterations": 40.0
+    },
+    {
+      "seed": 4,
+      "entropy": 4.277688458677455,
+      "band_40_60_pixel_fraction": 0.0009307861328125,
+      "band_40_60_energy_fraction": 0.00011599296944667368,
+      "support_above_40_fraction": 0.0053253173828125,
+      "support_above_60_fraction": 0.006256103515625,
+      "observed_residual": 0.1899076162363069,
+      "elapsed_seconds": 0.05889487499371171,
+      "iterations": 40.0
+    }
+  ],
+  "network_latency_ms": 6.910795858129859,
+  "parameter_count": 24
+}
